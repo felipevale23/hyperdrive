@@ -25,6 +25,8 @@
 - **CLI** — zoxide, eza, bat, fzf, fd, ripgrep, jq, bottom, btop, zinit (pre-seeded)
 - **Dev** — nodejs/npm/yarn, python + pip/pipx, rustup (stable toolchain),
   `asdf-vm` for per-project versions, neovim + LunarVim (`lvim`)
+- **TeX** (opt-in, `HYPERDRIVE_TEX=1`) — TeX Live (XeLaTeX + biblatex/biber +
+  latexmk), zathura, and [`texflow`](https://github.com/felipevale23/texflow)
 - **Apps** — Dolphin (default file manager, `Super+E`; nautilus kept as fallback),
   kcalc, KDE Connect (autostarts via `custom/execs.lua`)
 - **Containers** — Docker CE, `overlay2` pinned (btrfs root)
@@ -75,7 +77,8 @@ Arch container). Tagged pushes attach the ISO to a GitHub Release.
 3. Reboot, log in as your user, then:
    ```sh
    hyperdrive-setup         # end-4 + patches + dotfiles + GPU + GRUB theme + services
-   # GPU is autodetected; force it with e.g. HYPERDRIVE_GPU=nvidia hyperdrive-setup
+   # GPU is autodetected; override with e.g. HYPERDRIVE_GPU=nvidia hyperdrive-setup
+   # add the TeX Live + texflow stack with HYPERDRIVE_TEX=1 hyperdrive-setup
    ```
 4. Put your tokens in `~/.zshrc_secrets` (see `~/.zshrc_secrets.example`), reboot.
 

@@ -128,6 +128,35 @@ sudo pacman -S --needed --noconfirm \
 xdg-mime default org.kde.dolphin.desktop inode/directory || true
 
 # ---------------------------------------------------------------------------
+# TeX Live + TeXFlow — opt in with:  HYPERDRIVE_TEX=1 hyperdrive-setup
+if [[ -n "${HYPERDRIVE_TEX:-}" ]]; then
+    msg "TeX Live + TeXFlow (HYPERDRIVE_TEX set)"
+    sudo pacman -S --needed --noconfirm \
+        texlive-basic texlive-latex texlive-latexrecommended texlive-latexextra \
+        texlive-xetex texlive-fontsrecommended texlive-fontsextra \
+        texlive-bibtexextra texlive-binextra texlive-plaingeneric \
+        biber uv zathura zathura-pdf-mupdf
+
+    if ! command -v texflow >/dev/null; then
+        # 1) prebuilt binary — the project's recommended install
+        if curl -fL --retry 2 -o /tmp/texflow \
+            https://github.com/felipevale23/texflow/releases/latest/download/texflow-linux-x86_64 \
+            && [[ -s /tmp/texflow ]]; then
+            sudo install -Dm755 /tmp/texflow /usr/local/bin/texflow
+            rm -f /tmp/texflow
+        else
+            # 2) fall back to a from-source install with uv
+            rm -f /tmp/texflow
+            uv tool install --python 3.12 git+https://github.com/felipevale23/texflow.git \
+                || echo "  TeXFlow install failed — see github.com/felipevale23/texflow"
+        fi
+    fi
+    command -v texflow >/dev/null \
+        && echo "  texflow -> $(command -v texflow)" \
+        || echo "  texflow not on PATH yet — restart your shell"
+fi
+
+# ---------------------------------------------------------------------------
 msg "AUR helper (paru) + AUR packages"
 if ! command -v paru >/dev/null; then
     tmp="$(mktemp -d)"; git clone https://aur.archlinux.org/paru-bin.git "$tmp"
