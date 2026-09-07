@@ -1,0 +1,8 @@
+
+  hyperdrive live
+
+    hyperdrive-wifi       connect to Wi-Fi
+    hyperdrive-keymap     load a console keyboard layout
+    hyperdrive-locale     generate / set a locale
+    hyperdrive-install    guided install to disk   (or use: archinstall)
+

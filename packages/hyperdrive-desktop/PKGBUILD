@@ -26,7 +26,12 @@ depends=(
     # boot / containers
     grub efibootmgr os-prober docker docker-buildx docker-compose
     # shell + cli
-    zsh zoxide eza bat fzf fd ripgrep jq bottom btop neovim
+    zsh zoxide eza bat fzf fd ripgrep jq bottom btop neovim unzip wget
+    # dev toolchain (asdf-vm manages project-local versions on top of these)
+    nodejs npm yarn python-pip python-pipx rustup
+    # desktop utils + file manager (Dolphin replaces nautilus as the default)
+    dolphin dolphin-plugins ark kio-extras kdegraphics-thumbnailers
+    kcalc kdeconnect sshfs xdg-utils
     # fonts (ttf-jetbrains-mono-nerd is the kitty default in dotfiles/.config/kitty)
     ttf-firacode-nerd ttf-jetbrains-mono-nerd ttf-meslo-nerd ttf-nerd-fonts-symbols
     noto-fonts noto-fonts-emoji ttf-liberation ttf-fira-code
@@ -37,6 +42,8 @@ depends=(
 optdepends=(
     'sddm-sugar-dark: login theme (AUR / [hyperdrive] repo)'
     'oh-my-posh: zsh prompt (AUR / [hyperdrive] repo)'
+    'asdf-vm: per-project runtime version manager (AUR)'
+    'lunarvim: the lvim editor the dotfiles expect (AUR / installer)'
     'vulkan-radeon: AMD GPU (Vulkan)'
     'libva-mesa-driver: AMD GPU (VA-API)'
     'vulkan-intel: Intel GPU (Vulkan)'

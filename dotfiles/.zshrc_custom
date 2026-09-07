@@ -61,7 +61,10 @@ zstyle ':fzf-tab:complete:__zoxide_z:*' fzf-preview 'ls --color $realpath'
 # --- exports --------------------------------------------------
 export EDITOR=lvim
 export COMPOSE_BAKE=true
+# asdf-vm: classic (<=0.15) ships /opt/asdf-vm/asdf.sh; the Go rewrite (>=0.16)
+# just needs the shims dir on PATH and the `asdf` binary in /usr/bin.
 export ASDF_DATA_DIR="$HOME/.asdf"
+[ -f /opt/asdf-vm/asdf.sh ] && source /opt/asdf-vm/asdf.sh
 export PATH="${ASDF_DATA_DIR:-$HOME/.asdf}/shims:$PATH"
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 export PATH="$HOME/dev/sh/shell-scripts:$PATH"

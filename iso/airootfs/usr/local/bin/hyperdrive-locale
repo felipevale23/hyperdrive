@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# hyperdrive-locale — generate + activate a locale in the live session.
+#
+#   hyperdrive-locale                 # defaults to en_US.UTF-8
+#   hyperdrive-locale pt_BR.UTF-8
+#
+# (the guided installer asks separately for the target system's locale.)
+set -euo pipefail
+
+loc="${1:-en_US.UTF-8}"
+
+grep -qE "^#?${loc}[. ]" /etc/locale.gen || echo "$loc UTF-8" >> /etc/locale.gen
+sed -i "/^#\s*${loc} /s/^#\s*//" /etc/locale.gen
+locale-gen
+
+localectl set-locale "LANG=$loc" 2>/dev/null || echo "LANG=$loc" > /etc/locale.conf
+export LANG="$loc"
+echo ":: locale generated and set for new shells: $loc"

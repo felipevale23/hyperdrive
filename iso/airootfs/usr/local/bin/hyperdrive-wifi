@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# hyperdrive-wifi — connect the live ISO to Wi-Fi (NetworkManager or iwd).
+#
+#   hyperdrive-wifi                       # interactive: scan, pick, connect
+#   hyperdrive-wifi "My SSID"             # open network
+#   hyperdrive-wifi "My SSID" "secret"    # WPA
+set -euo pipefail
+
+SSID="${1:-}"
+PASS="${2:-}"
+
+prompt_creds() {
+    read -rp $'\nSSID: ' SSID
+    read -rsp 'Password (empty for open network): ' PASS; echo
+}
+
+connect_nm() {
+    nmcli radio wifi on || true
+    if [[ -z "$SSID" ]]; then
+        nmcli --fields SSID,SIGNAL,SECURITY device wifi list --rescan yes
+        prompt_creds
+    fi
+    if [[ -n "$PASS" ]]; then
+        nmcli device wifi connect "$SSID" password "$PASS"
+    else
+        nmcli device wifi connect "$SSID"
+    fi
+}
+
+connect_iwd() {
+    local dev
+    dev="$(iwctl device list 2>/dev/null | awk '/station/{print $1; exit}')"
+    dev="${dev:-wlan0}"
+    iwctl station "$dev" scan || true
+    sleep 2
+    if [[ -z "$SSID" ]]; then
+        iwctl station "$dev" get-networks
+        prompt_creds
+    fi
+    if [[ -n "$PASS" ]]; then
+        iwctl --passphrase "$PASS" station "$dev" connect "$SSID"
+    else
+        iwctl station "$dev" connect "$SSID"
+    fi
+}
+
+if systemctl is-active --quiet NetworkManager && command -v nmcli >/dev/null; then
+    connect_nm
+elif command -v iwctl >/dev/null; then
+    connect_iwd
+else
+    echo "no NetworkManager or iwd available" >&2
+    exit 1
+fi
+
+echo ":: checking connectivity..."
+for _ in 1 2 3 4 5; do
+    if curl -fsS --max-time 5 -o /dev/null https://archlinux.org; then
+        echo ":: online."
+        exit 0
+    fi
+    sleep 2
+done
+echo ":: associated but no route yet — check 'ip a' and DNS" >&2
+exit 1

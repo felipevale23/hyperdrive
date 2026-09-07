@@ -41,7 +41,7 @@ for c in sgdisk pacstrap arch-chroot genfstab mkfs.btrfs mkfs.fat wipefs partpro
     command -v "$c" >/dev/null || die "missing required tool: $c"
 done
 curl -fsS --max-time 8 -o /dev/null https://archlinux.org \
-    || die "no network — connect first with 'nmtui' or 'iwctl', then re-run"
+    || die "no network — run 'hyperdrive-wifi' (or nmtui / iwctl), then re-run"
 
 # --- target disk ----------------------------------------------------------
 msg "available disks"

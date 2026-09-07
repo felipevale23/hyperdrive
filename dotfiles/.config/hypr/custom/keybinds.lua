@@ -1,5 +1,6 @@
 hl.bind("CTRL+SUPER+ALT+Slash", hl.dsp.exec_cmd("xdg-open ~/.config/hypr/custom/keybinds.lua"), {description = "Edit user keybinds"} )
 hl.bind("SUPER + SHIFT + G", hl.dsp.exec_cmd("antigravity"), { description = "App: Launch Google Antigravity" })
+hl.bind("SUPER + E", hl.dsp.exec_cmd("dolphin"), { description = "App: Dolphin (file manager)" })
 
 -- ── Windows-style Alt+Tab workspace switcher ──────────────────────────────
 -- 1st Alt+Tab  -> flip to the previous workspace, no overview.

@@ -100,12 +100,50 @@ HOOK
 fi
 
 # ---------------------------------------------------------------------------
+msg "developer toolchain"
+sudo pacman -S --needed --noconfirm \
+    nodejs npm yarn \
+    python-pip python-pipx \
+    rustup \
+    ripgrep fd unzip wget
+
+# rust: pull the stable toolchain (harmless if one is already the default)
+rustup show active-toolchain >/dev/null 2>&1 || rustup default stable \
+    || echo "  rustup: run 'rustup default stable' once you're online"
+
+# zinit — the .zshrc_custom loads it; pre-seed so the first shell is instant
+ZINIT_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/zinit/zinit.git"
+[[ -d "$ZINIT_HOME" ]] || git clone --depth 1 \
+    https://github.com/zdharma-continuum/zinit.git "$ZINIT_HOME"
+
+# ---------------------------------------------------------------------------
+msg "extra apps (KDE utils, Dolphin, KDE Connect)"
+sudo pacman -S --needed --noconfirm \
+    xdg-utils \
+    dolphin dolphin-plugins ark kio-extras kdegraphics-thumbnailers \
+    kcalc \
+    kdeconnect sshfs
+
+# Dolphin as the default file manager (end-4 ships nautilus — kept as fallback)
+xdg-mime default org.kde.dolphin.desktop inode/directory || true
+
+# ---------------------------------------------------------------------------
 msg "AUR helper (paru) + AUR packages"
 if ! command -v paru >/dev/null; then
     tmp="$(mktemp -d)"; git clone https://aur.archlinux.org/paru-bin.git "$tmp"
     ( cd "$tmp" && makepkg -si --noconfirm ); rm -rf "$tmp"
 fi
-paru -S --needed --noconfirm sddm-sugar-dark oh-my-posh-bin lazyvim || true
+paru -S --needed --noconfirm sddm-sugar-dark oh-my-posh-bin asdf-vm || true
+
+# ---------------------------------------------------------------------------
+msg "LunarVim (lvim — the dotfiles set EDITOR=lvim, alias vim=lvim)"
+if ! command -v lvim >/dev/null; then
+    LV_BRANCH='release-1.4/neovim-0.9' bash <(curl -fsSL \
+        https://raw.githubusercontent.com/LunarVim/LunarVim/release-1.4/neovim-0.9/utils/installer/install.sh) \
+        --no-install-dependencies --yes \
+        || echo "  LunarVim install failed — 'lvim' will be missing. Upstream is
+  unmaintained; consider LazyVim / kickstart.nvim and updating the dotfiles."
+fi
 
 # ---------------------------------------------------------------------------
 msg "end-4 illogical-impulse (Hyprland shell + Quickshell)"

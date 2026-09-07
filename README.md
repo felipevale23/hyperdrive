@@ -22,6 +22,11 @@
 - **Shell** — zsh (ML4W loader + zinit + oh-my-posh), `~/.zshrc_custom`, secrets in
   `~/.zshrc_secrets` (never committed)
 - **Terminal** — kitty, Windows-style `Ctrl+C`/`Ctrl+V` (still SIGINT with no selection)
+- **CLI** — zoxide, eza, bat, fzf, fd, ripgrep, jq, bottom, btop, zinit (pre-seeded)
+- **Dev** — nodejs/npm/yarn, python + pip/pipx, rustup (stable toolchain),
+  `asdf-vm` for per-project versions, neovim + LunarVim (`lvim`)
+- **Apps** — Dolphin (default file manager, `Super+E`; nautilus kept as fallback),
+  kcalc, KDE Connect (autostarts via `custom/execs.lua`)
 - **Containers** — Docker CE, `overlay2` pinned (btrfs root)
 - **Custom patches** (`patches/quickshell/`):
   - media-controls popup anchors under the bar widget
@@ -56,7 +61,8 @@ Arch container). Tagged pushes attach the ISO to a GitHub Release.
 
 ## Install
 
-1. Boot the ISO, connect network (`nmtui` or `iwctl`).
+1. Boot the ISO. Live helpers: `hyperdrive-wifi` (Wi-Fi), `hyperdrive-keymap`
+   (console layout), `hyperdrive-locale`. Get online before step 2.
 2. Run the guided installer:
    ```sh
    hyperdrive-install

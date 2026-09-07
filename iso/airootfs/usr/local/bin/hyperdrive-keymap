@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# hyperdrive-keymap — load a console keymap for the live session, so typing the
+# installer answers on a non-US keyboard is not painful.
+#
+#   hyperdrive-keymap                # list, then prompt
+#   hyperdrive-keymap br-abnt2       # load directly
+#
+# (the guided installer asks separately for the target system's keymap.)
+set -euo pipefail
+
+km="${1:-}"
+if [[ -z "$km" ]]; then
+    localectl list-keymaps | ${PAGER:-less}
+    read -rp $'\nkeymap: ' km
+fi
+
+loadkeys "$km"
+echo ":: console keymap loaded: $km"
