@@ -10,8 +10,8 @@ post_install() {
   Next:
     * add yourself to the docker + input groups:  usermod -aG docker,input <you>
       (input = raw /dev/input access for the Alt-Tab workspace switcher)
-    * deploy dotfiles as your user:       hyperdrive-apply-dotfiles
-    * set up GRUB theme / grub.cfg:       see hyperdrive postinstall.sh
+    * finish the desktop as your user:    hyperdrive-setup
+      (end-4 + patches + dotfiles + GRUB theme + services)
     * reboot
 
 EOF

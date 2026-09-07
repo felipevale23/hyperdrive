@@ -20,5 +20,5 @@ package() {
     cp -rT "${_srcdir}/system"   "${share}/system"
     cp -rT "${_srcdir}/patches"  "${share}/patches"
     install -Dm755 "${_srcdir}/scripts/apply-dotfiles.sh" "${pkgdir}/usr/bin/hyperdrive-apply-dotfiles"
-    install -Dm755 "${_srcdir}/scripts/postinstall.sh"    "${pkgdir}/usr/bin/hyperdrive-install"
+    install -Dm755 "${_srcdir}/scripts/postinstall.sh"    "${pkgdir}/usr/bin/hyperdrive-setup"
 }

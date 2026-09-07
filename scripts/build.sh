@@ -28,13 +28,16 @@ if [[ -d "${REPO_ROOT}/iso/airootfs" ]]; then
     cp -rT "${REPO_ROOT}/iso/airootfs" "${PROFILE}/airootfs"
 fi
 
-# ship the installed-system material inside the ISO so the installer can pull it
-install -d "${PROFILE}/airootfs/usr/local/share/hyperdrive"
-cp -rT "${REPO_ROOT}/dotfiles" "${PROFILE}/airootfs/usr/local/share/hyperdrive/dotfiles"
-cp -rT "${REPO_ROOT}/system"   "${PROFILE}/airootfs/usr/local/share/hyperdrive/system"
-cp -rT "${REPO_ROOT}/patches"  "${PROFILE}/airootfs/usr/local/share/hyperdrive/patches"
-install -Dm755 "${REPO_ROOT}/scripts/postinstall.sh"   "${PROFILE}/airootfs/usr/local/bin/hyperdrive-install"
-install -Dm755 "${REPO_ROOT}/scripts/apply-dotfiles.sh" "${PROFILE}/airootfs/usr/local/share/hyperdrive/apply-dotfiles.sh"
+# ship the installed-system material inside the ISO so the guided installer
+# (hyperdrive-install) can copy it into the target
+SH="${PROFILE}/airootfs/usr/local/share/hyperdrive"
+install -d "${SH}"
+cp -rT "${REPO_ROOT}/dotfiles" "${SH}/dotfiles"
+cp -rT "${REPO_ROOT}/system"   "${SH}/system"
+cp -rT "${REPO_ROOT}/patches"  "${SH}/patches"
+install -Dm755 "${REPO_ROOT}/scripts/postinstall.sh"    "${SH}/postinstall.sh"
+install -Dm755 "${REPO_ROOT}/scripts/apply-dotfiles.sh" "${SH}/apply-dotfiles.sh"
+install -Dm755 "${REPO_ROOT}/scripts/live-install.sh"   "${PROFILE}/airootfs/usr/local/bin/hyperdrive-install"
 
 echo ":: mkarchiso"
 rm -rf "${WORK}"

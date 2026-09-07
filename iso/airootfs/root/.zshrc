@@ -21,4 +21,4 @@ alias la='ls -lha'
 alias grep='grep --color=auto'
 alias vi='nvim'
 
-echo "hyperdrive live — run 'hyperdrive-install' or 'archinstall' to install."
+echo "hyperdrive live — run 'hyperdrive-install' (guided) to install to disk."

@@ -36,7 +36,8 @@ dotfiles/     config tree deployed into $HOME by the installer (NOT baked into a
 system/       files that go to / on the installed system (grub, docker, sddm, hooks)
 patches/      diffs against a pinned end-4 (see postinstall.sh: END4_REF)
 packages/     PKGBUILDs — hyperdrive-desktop (meta) + hyperdrive-dotfiles
-scripts/      build.sh (mkarchiso), postinstall.sh, apply-dotfiles.sh
+scripts/      build.sh (mkarchiso), live-install.sh (guided ISO installer =
+              hyperdrive-install), postinstall.sh (= hyperdrive-setup), apply-dotfiles.sh
 ```
 
 ## Build the ISO
@@ -51,12 +52,19 @@ Arch container). Tagged pushes attach the ISO to a GitHub Release.
 
 ## Install
 
-1. Boot the ISO, connect network (`nmtui`).
-2. `archinstall` (or `hyperdrive-install` for the guided flow) — use a **btrfs**
-   root with an `@` / `@home` subvol layout and **GRUB**.
-3. Reboot into the new system, log in, then as your user:
+1. Boot the ISO, connect network (`nmtui` or `iwctl`).
+2. Run the guided installer:
    ```sh
-   hyperdrive-install       # installs end-4 + patches + dotfiles + services
+   hyperdrive-install
+   ```
+   It wipes **one** disk (GPT/UEFI), lays out btrfs `@ @home @log @pkg
+   @snapshots`, pacstraps a minimal base with GRUB + NetworkManager, creates
+   your user, and copies the hyperdrive tree into the new system. For
+   encryption, RAID, BIOS/MBR, or manual partitioning, use `archinstall`
+   instead and copy `/usr/local/share/hyperdrive` to `/mnt` yourself.
+3. Reboot, log in as your user, then:
+   ```sh
+   hyperdrive-setup         # end-4 + patches + dotfiles + GRUB theme + services
    ```
 4. Put your tokens in `~/.zshrc_secrets` (see `~/.zshrc_secrets.example`), reboot.
 
@@ -83,7 +91,7 @@ identity in this repo — run the secret scan before every push.
 ## Status
 
 `v0` scaffold. TODO: `[hyperdrive]` signed pacman repo from CI, QEMU smoke-boot
-test, archinstall custom profile, calamares config for the btrfs+GRUB layout.
+test, disk-encryption (LUKS) option in the guided installer.
 
 ## License
 

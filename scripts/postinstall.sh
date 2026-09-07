@@ -2,7 +2,7 @@
 # hyperdrive post-install — run ONCE on the freshly installed target system as
 # the normal user (it uses sudo where needed).
 #
-#   hyperdrive-install            # from the live ISO's installer, or
+#   hyperdrive-setup             # installed there by the guided installer, or
 #   /usr/local/share/hyperdrive/postinstall.sh
 set -euo pipefail
 
@@ -83,6 +83,9 @@ sudo systemctl enable sddm
 # docker: rootless-equivalent socket access. input: raw /dev/input/event* reads
 # for the Alt-Tab watcher (dotfiles/.config/hypr/custom/scripts/alt-release-watch.py).
 sudo usermod -aG docker,input "$USER"
+
+# the guided installer leaves a first-boot hint in /etc/motd; clear it now
+sudo rm -f /etc/motd
 
 msg "done — log out/in (or reboot) so the docker+input groups take effect."
 echo "     Add your tokens to ~/.zshrc_secrets (see ~/.zshrc_secrets.example)."
