@@ -12,6 +12,9 @@ depends=(
     # session
     hyprland xdg-desktop-portal-hyprland sddm kitty polkit
     qt5-wayland qt6-wayland
+    # GL/Vulkan baseline — vendor drivers are picked by hyperdrive-setup
+    # (autodetect / HYPERDRIVE_GPU); see optdepends
+    mesa vulkan-icd-loader
     # end-4 shell deps that live in official repos
     quickshell wl-clipboard cliphist brightnessctl ddcutil
     hypridle hyprlock hyprpicker wlogout fuzzel
@@ -24,8 +27,8 @@ depends=(
     grub efibootmgr os-prober docker docker-buildx docker-compose
     # shell + cli
     zsh zoxide eza bat fzf fd ripgrep jq bottom btop neovim
-    # fonts
-    ttf-firacode-nerd ttf-meslo-nerd ttf-nerd-fonts-symbols
+    # fonts (ttf-jetbrains-mono-nerd is the kitty default in dotfiles/.config/kitty)
+    ttf-firacode-nerd ttf-jetbrains-mono-nerd ttf-meslo-nerd ttf-nerd-fonts-symbols
     noto-fonts noto-fonts-emoji ttf-liberation ttf-fira-code
     # net
     networkmanager
@@ -34,6 +37,13 @@ depends=(
 optdepends=(
     'sddm-sugar-dark: login theme (AUR / [hyperdrive] repo)'
     'oh-my-posh: zsh prompt (AUR / [hyperdrive] repo)'
+    'vulkan-radeon: AMD GPU (Vulkan)'
+    'libva-mesa-driver: AMD GPU (VA-API)'
+    'vulkan-intel: Intel GPU (Vulkan)'
+    'intel-media-driver: Intel GPU (VA-API, gen9+)'
+    'nvidia-lts: NVIDIA GPU driver for the linux-lts kernel'
+    'nvidia-utils: NVIDIA userspace (needed with nvidia-lts)'
+    'libva-nvidia-driver: NVIDIA VA-API on Wayland'
 )
 
 package() {

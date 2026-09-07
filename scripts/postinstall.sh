@@ -16,15 +16,88 @@ msg() { printf '\n\033[1;35m:: %s\033[0m\n' "$*"; }
 # ---------------------------------------------------------------------------
 msg "base packages"
 sudo pacman -S --needed --noconfirm \
-    base-devel git rsync \
+    base-devel git rsync pciutils \
     hyprland sddm kitty pipewire pipewire-pulse wireplumber wl-clipboard \
     docker docker-buildx docker-compose \
     grub efibootmgr \
     zsh zoxide eza bat fzf bottom btop jq neovim \
-    ttf-fira-code ttf-firacode-nerd ttf-meslo-nerd ttf-nerd-fonts-symbols \
+    ttf-fira-code ttf-firacode-nerd ttf-jetbrains-mono-nerd \
+    ttf-meslo-nerd ttf-nerd-fonts-symbols \
     noto-fonts noto-fonts-emoji ttf-liberation \
     qt5-declarative qt5-graphicaleffects qt5-quickcontrols2 qt5-svg \
     python
+
+# ---------------------------------------------------------------------------
+msg "GPU drivers"
+# autodetected from lspci; override with HYPERDRIVE_GPU=amd|intel|nvidia|none
+# (space-separate for hybrids, e.g. HYPERDRIVE_GPU="intel nvidia")
+gpu_info="$(lspci -nn 2>/dev/null | grep -Ei 'vga compatible controller|3d controller|display controller' || true)"
+printf '%s\n' "$gpu_info"
+
+sel="${HYPERDRIVE_GPU:-auto}"
+if [[ "$sel" == auto ]]; then
+    sel=""
+    # match on PCI vendor IDs (reliable): NVIDIA 10de, AMD/ATI 1002/1022, Intel 8086
+    grep -qiE '\[10de:'                            <<<"$gpu_info" && sel+=" nvidia"
+    grep -qiE '\[1002:|\[1022:'                    <<<"$gpu_info" && sel+=" amd"
+    grep -qiE '\[8086:'                            <<<"$gpu_info" && sel+=" intel"
+    grep -qiE 'virtio|qxl|vmware|cirrus|bochs|\[1234:|\[1af4:|\[15ad:' <<<"$gpu_info" && sel+=" vm"
+    [[ -z "${sel// /}" ]] && sel="vm"
+fi
+echo ":: GPU: ${sel# }"
+
+nvidia=""
+gpu_pkgs=(vulkan-icd-loader)
+case "$sel" in
+  *none*) gpu_pkgs=() ;;
+  *)
+    gpu_pkgs+=(mesa)
+    [[ "$sel" == *nvidia* ]] && { gpu_pkgs+=(nvidia-lts nvidia-utils libva-nvidia-driver egl-wayland); nvidia=1; }
+    [[ "$sel" == *amd*    ]] && gpu_pkgs+=(vulkan-radeon libva-mesa-driver)
+    [[ "$sel" == *intel*  ]] && gpu_pkgs+=(vulkan-intel intel-media-driver)
+    [[ "$sel" == *vm*     ]] && gpu_pkgs+=(vulkan-swrast)
+    ;;
+esac
+
+if [[ -n "${gpu_pkgs[*]:-}" ]]; then
+    mapfile -t gpu_pkgs < <(printf '%s\n' "${gpu_pkgs[@]}" | awk '!seen[$0]++')
+    echo ":: installing ${gpu_pkgs[*]}"
+    sudo pacman -S --needed --noconfirm "${gpu_pkgs[@]}"
+fi
+
+if [[ -n "$nvidia" ]]; then
+    msg "NVIDIA: DRM modeset + initramfs + Wayland env"
+    printf 'options nvidia_drm modeset=1 fbdev=1\noptions nvidia NVreg_PreserveVideoMemoryAllocations=1\n' \
+        | sudo tee /etc/modprobe.d/nvidia.conf >/dev/null
+
+    grep -q nvidia_drm /etc/mkinitcpio.conf || sudo sed -i \
+        's/^MODULES=(\(.*\))/MODULES=(\1 nvidia nvidia_modeset nvidia_uvm nvidia_drm)/' /etc/mkinitcpio.conf
+    # pure NVIDIA -> keep nouveau out of early KMS; hybrid -> keep kms for the iGPU
+    [[ "$sel" == *amd* || "$sel" == *intel* ]] || sudo sed -i '/^HOOKS=/ s/ kms//' /etc/mkinitcpio.conf
+
+    sudo tee /etc/pacman.d/hooks/95-nvidia.hook >/dev/null <<'HOOK'
+[Trigger]
+Operation=Install
+Operation=Upgrade
+Operation=Remove
+Type=Package
+Target=nvidia-lts
+Target=linux-lts
+[Action]
+Description=Rebuilding initramfs (NVIDIA)...
+When=PostTransaction
+Exec=/usr/bin/sh -c 'mkinitcpio -P'
+HOOK
+
+    grep -q LIBVA_DRIVER_NAME /etc/environment 2>/dev/null || printf \
+        '\n# hyperdrive: NVIDIA on Wayland\nLIBVA_DRIVER_NAME=nvidia\n__GLX_VENDOR_LIBRARY_NAME=nvidia\nNVD_BACKEND=direct\n' \
+        | sudo tee -a /etc/environment >/dev/null
+
+    sudo systemctl enable nvidia-suspend.service nvidia-hibernate.service nvidia-resume.service || true
+    sudo mkinitcpio -P
+    echo ":: nvidia-lts is pinned to the linux-lts kernel — if you add mainline"
+    echo "   'linux' later, also install 'nvidia'."
+fi
 
 # ---------------------------------------------------------------------------
 msg "AUR helper (paru) + AUR packages"

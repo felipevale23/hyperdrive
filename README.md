@@ -12,6 +12,10 @@
 ## What you get
 
 - **Session** — Hyprland (end-4 *illogical-impulse* Lua config) + Quickshell shell
+- **GPU** — `hyperdrive-setup` autodetects via `lspci`: Mesa + Vulkan for
+  AMD/Intel; `nvidia-lts` + DRM modeset, initramfs modules, a rebuild hook and
+  Wayland env vars for NVIDIA (incl. hybrid). Override with
+  `HYPERDRIVE_GPU=amd|intel|nvidia|none` (space-separate for hybrids)
 - **Login** — SDDM, `sugar-dark` theme
 - **Boot** — GRUB with the Elegant *mojave / window / left / dark* theme, btrfs `@`
   subvol layout, `linux-lts` + microcode, a pacman hook that keeps `grubx64.efi` current
@@ -64,7 +68,8 @@ Arch container). Tagged pushes attach the ISO to a GitHub Release.
    instead and copy `/usr/local/share/hyperdrive` to `/mnt` yourself.
 3. Reboot, log in as your user, then:
    ```sh
-   hyperdrive-setup         # end-4 + patches + dotfiles + GRUB theme + services
+   hyperdrive-setup         # end-4 + patches + dotfiles + GPU + GRUB theme + services
+   # GPU is autodetected; force it with e.g. HYPERDRIVE_GPU=nvidia hyperdrive-setup
    ```
 4. Put your tokens in `~/.zshrc_secrets` (see `~/.zshrc_secrets.example`), reboot.
 
