@@ -1,0 +1,28 @@
+# build artifacts
+/build/
+/dist/
+/work/
+*.iso
+*.iso.sig
+
+# locally built packages / repo
+/packages/**/pkg/
+/packages/**/src/
+/packages/**/*.pkg.tar.*
+/repo/
+
+# vendored upstreams (fetched at build time)
+/vendor/
+
+# never commit real secrets
+.zshrc_secrets
+*.key
+*.pem
+id_*
+!id_*.pub.example
+
+.vscode/
+.DS_Store
+
+__pycache__/
+*.pyc

@@ -1,0 +1,78 @@
+--- a/modules/ii/bar/BarContent.qml	2026-09-05 17:42:03.170830173 -0300
++++ b/modules/ii/bar/BarContent.qml	2026-09-06 00:02:21.713462365 -0300
+@@ -110,18 +110,15 @@
+ 
+         BarGroup {
+             id: leftCenterGroup
++            visible: false // Resources hidden; Media moved to the right, next to the system tray
+             anchors.verticalCenter: parent.verticalCenter
+             implicitWidth: root.centerSideModuleWidth
+ 
+             Resources {
++                visible: false // hidden — CPU/RAM/swap meters
+                 alwaysShowAllResources: root.useShortenedForm === 2
+                 Layout.fillWidth: root.useShortenedForm === 2
+             }
+-
+-            Media {
+-                visible: root.useShortenedForm < 2
+-                Layout.fillWidth: true
+-            }
+         }
+ 
+         VerticalBarSeparator {
+@@ -130,6 +127,7 @@
+ 
+         BarGroup {
+             id: middleCenterGroup
++            visible: false // Workspaces
+             anchors.verticalCenter: parent.verticalCenter
+             padding: workspacesWidget.widgetPadding
+ 
+@@ -175,12 +173,12 @@
+                 }
+ 
+                 UtilButtons {
+-                    visible: (Config.options.bar.verbose && root.useShortenedForm === 0)
++                    visible: false
+                     Layout.alignment: Qt.AlignVCenter
+                 }
+ 
+                 BatteryIndicator {
+-                    visible: (root.useShortenedForm < 2 && Battery.available)
++                    visible: false
+                     Layout.alignment: Qt.AlignVCenter
+                 }
+             }
+@@ -324,12 +322,16 @@
+                 invertSide: Config?.options.bar.bottom
+             }
+ 
+-            Item {
+-                Layout.fillWidth: true
++            BarGroup { // Media — placed next to the system tray
++                visible: root.useShortenedForm < 2
+                 Layout.fillHeight: true
++                Media {
++                    Layout.fillHeight: true
++                    Layout.maximumWidth: 240
++                }
+             }
+ 
+-            // Weather
++            // Weather — grouped with Media on the right
+             Loader {
+                 Layout.leftMargin: 4
+                 active: Config.options.bar.weather.enable
+@@ -338,6 +340,11 @@
+                     WeatherBar {}
+                 }
+             }
++
++            Item {
++                Layout.fillWidth: true
++                Layout.fillHeight: true
++            }
+         }
+     }
+ }

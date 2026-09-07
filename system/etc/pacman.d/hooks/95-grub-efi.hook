@@ -1,0 +1,9 @@
+[Trigger]
+Type = Package
+Operation = Upgrade
+Target = grub
+
+[Action]
+Description = Reinstalling GRUB to the ESP and regenerating grub.cfg...
+When = PostTransaction
+Exec = /usr/bin/sh -c 'grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB && grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB --removable && grub-mkconfig -o /boot/grub/grub.cfg'

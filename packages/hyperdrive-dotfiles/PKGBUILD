@@ -1,0 +1,24 @@
+# Maintainer: felipevale23
+# Ships the hyperdrive config tree + apply script. Nothing is written to $HOME
+# by the package itself — run `hyperdrive-apply-dotfiles` as your user.
+pkgname=hyperdrive-dotfiles
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="hyperdrive dotfiles (end-4 custom overlay) + quickshell patch set"
+arch=('any')
+url="https://github.com/felipevale23/hyperdrive"
+license=('MIT')
+depends=('bash' 'rsync')
+
+# Built from a checkout of the repo; adjust source= for a tagged release.
+_srcdir="${startdir}/../.."
+
+package() {
+    local share="${pkgdir}/usr/local/share/hyperdrive"
+    install -d "${share}"
+    cp -rT "${_srcdir}/dotfiles" "${share}/dotfiles"
+    cp -rT "${_srcdir}/system"   "${share}/system"
+    cp -rT "${_srcdir}/patches"  "${share}/patches"
+    install -Dm755 "${_srcdir}/scripts/apply-dotfiles.sh" "${pkgdir}/usr/bin/hyperdrive-apply-dotfiles"
+    install -Dm755 "${_srcdir}/scripts/postinstall.sh"    "${pkgdir}/usr/bin/hyperdrive-install"
+}

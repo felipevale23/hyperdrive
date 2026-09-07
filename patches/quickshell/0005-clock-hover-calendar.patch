@@ -1,0 +1,23 @@
+--- a/modules/ii/bar/ClockWidgetPopup.qml	2026-09-05 17:42:03.170830173 -0300
++++ b/modules/ii/bar/ClockWidgetPopup.qml	2026-09-06 22:04:02.146909197 -0300
+@@ -3,6 +3,7 @@
+ import qs.services
+ import QtQuick
+ import QtQuick.Layouts
++import "../sidebarRight/calendar/"
+ 
+ StyledPopup {
+     id: root
+@@ -42,6 +43,12 @@
+             label: root.formattedDate
+         }
+ 
++        CalendarWidget {
++            Layout.alignment: Qt.AlignHCenter
++            Layout.topMargin: 2
++            Layout.bottomMargin: 2
++        }
++
+         StyledPopupValueRow {
+             icon: "timelapse"
+             label: Translation.tr("System uptime:")

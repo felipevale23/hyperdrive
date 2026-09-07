@@ -1,0 +1,20 @@
+post_install() {
+    systemctl enable sddm.service || true
+    systemctl enable docker.service || true
+    getent group docker >/dev/null || groupadd docker
+    cat <<'EOF'
+
+  hyperdrive-desktop installed.
+
+  Next:
+    * add yourself to the docker group:  usermod -aG docker <you>
+    * deploy dotfiles as your user:       hyperdrive-apply-dotfiles
+    * set up GRUB theme / grub.cfg:       see hyperdrive postinstall.sh
+    * reboot
+
+EOF
+}
+
+post_upgrade() {
+    post_install
+}

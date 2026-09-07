@@ -1,0 +1,23 @@
+# /etc/default/grub for hyperdrive — GRUB with the Elegant (mojave) theme.
+# root= / rootflags=subvol=@ are auto-detected by grub-mkconfig on a btrfs @ layout.
+
+GRUB_DEFAULT=0
+GRUB_TIMEOUT=3
+GRUB_TIMEOUT_STYLE=menu
+GRUB_DISTRIBUTOR="Arch"
+
+# root= and (for btrfs) rootflags=subvol=@ are added automatically by grub-mkconfig.
+GRUB_CMDLINE_LINUX_DEFAULT=""
+GRUB_CMDLINE_LINUX=""
+
+# Graphical menu (needed for the Elegant theme)
+GRUB_TERMINAL_OUTPUT=gfxterm
+GRUB_GFXMODE=1920x1080,auto
+GRUB_GFXPAYLOAD_LINUX=keep
+
+GRUB_DISABLE_RECOVERY=true
+GRUB_DISABLE_OS_PROBER=true
+
+# GRUB_THEME is set by the Elegant install.sh:
+GRUB_THEME="/usr/share/grub/themes/Elegant-mojave-window-left-dark/theme.txt"
+GRUB_BACKGROUND="/usr/share/grub/themes/Elegant-mojave-window-left-dark/background.jpg"

@@ -1,0 +1,106 @@
+# -----------------------------------------------------
+# ~/.zshrc_custom  — sourced last by ~/.zshrc (ML4W loader)
+# -----------------------------------------------------
+
+# --- zinit -------------------------------------------------------------
+ZINIT_HOME="${XDG_DATA_HOME:-${HOME}/.local/share}/zinit/zinit.git"
+if [ ! -d "$ZINIT_HOME" ]; then
+    mkdir -p "$(dirname "$ZINIT_HOME")"
+    git clone https://github.com/zdharma-continuum/zinit.git "$ZINIT_HOME"
+fi
+source "${ZINIT_HOME}/zinit.zsh"
+
+# --- plugins ---------------------------------------------------------
+zinit light zsh-users/zsh-syntax-highlighting
+zinit light zsh-users/zsh-completions
+zinit light zsh-users/zsh-autosuggestions
+zinit light Aloxaf/fzf-tab
+
+# --- snippets -------------------------------------------------------
+zinit snippet OMZP::git
+zinit snippet OMZP::sudo
+zinit snippet OMZP::archlinux
+zinit snippet OMZP::aws
+zinit snippet OMZP::kubectl
+zinit snippet OMZP::kubectx
+zinit snippet OMZP::command-not-found
+
+# --- completions ---------------------------------------------------
+autoload -Uz compinit && compinit
+zinit cdreplay -q
+
+# --- prompt (oh-my-posh) -----------------------------------------
+eval "$(oh-my-posh init zsh --config "$HOME/.config/ohmyposh/spaceship.omp.toml")"
+
+# --- keybindings -------------------------------------------------
+bindkey -e
+bindkey '^p' history-search-backward
+bindkey '^n' history-search-forward
+bindkey '^[w' kill-region
+
+# --- history ----------------------------------------------------
+HISTSIZE=100000
+HISTFILE=~/.zsh_history
+SAVEHIST=$HISTSIZE
+HISTDUP=erase
+setopt appendhistory
+setopt sharehistory
+setopt hist_ignore_space
+setopt hist_ignore_all_dups
+setopt hist_save_no_dups
+setopt hist_ignore_dups
+setopt hist_find_no_dups
+
+# --- completion styling ---------------------------------------
+zstyle ':completion:*' matcher-list 'm:{a-z}={A-Za-z}'
+zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
+zstyle ':completion:*' menu no
+zstyle ':fzf-tab:complete:cd:*' fzf-preview 'ls --color $realpath'
+zstyle ':fzf-tab:complete:__zoxide_z:*' fzf-preview 'ls --color $realpath'
+
+# --- exports --------------------------------------------------
+export EDITOR=lvim
+export COMPOSE_BAKE=true
+export ASDF_DATA_DIR="$HOME/.asdf"
+export PATH="${ASDF_DATA_DIR:-$HOME/.asdf}/shims:$PATH"
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+export PATH="$HOME/dev/sh/shell-scripts:$PATH"
+[ -d "$HOME/bin" ]           && export PATH="$HOME/bin:$PATH"
+[ -d "$HOME/.opencode/bin" ] && export PATH="$HOME/.opencode/bin:$PATH"
+
+# Android SDK — uncomment once /opt/android-sdk is installed
+# export ANDROID_HOME=/opt/android-sdk
+# export PATH="$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$ANDROID_HOME/tools:$ANDROID_HOME/tools/bin:$PATH"
+
+# OCI
+# OCI: set these in ~/.zshrc_secrets, not here
+# export COMPARTMENT_OCID="ocid1.tenancy.oc1..xxxx"
+# region="sa-saopaulo-1"
+
+# --- aliases -------------------------------------------------
+alias copy='xclip -selection clipboard'
+alias vim='lvim'
+alias vi='lvim'
+alias c='clear'
+alias ls='eza --grid --color auto --icons --sort=type'
+alias ll='eza --long --color always --icons --sort=type'
+alias la='eza --grid --all --color auto --icons --sort=type'
+alias lla='eza --long --all --color auto --icons --sort=type'
+alias cat='bat'
+alias top='btm'
+alias connect='. $HOME/dev/sh/shell-scripts/ssh.sh connect'
+alias register='. $HOME/dev/sh/shell-scripts/ssh.sh register'
+alias sendFile='. $HOME/dev/sh/shell-scripts/sendFile.sh sendFile'
+alias sendImage='. $HOME/dev/sh/shell-scripts/sendImage.sh sendImage'
+alias sendPodmanImage='. $HOME/dev/sh/shell-scripts/sendPodmanImage.sh sendPodmanImage'
+alias pdfLocker='$HOME/dev/sh/shell-scripts/pdfLocker.sh'
+alias setRepo='echo git config --global --add safe.directory'
+alias gittoken='echo "$GIT_TOKEN" | copy'
+
+# --- shell integrations ------------------------------------
+command -v fzf    >/dev/null && eval "$(fzf --zsh)"
+command -v zoxide >/dev/null && eval "$(zoxide init --cmd cd zsh)"
+command -v uv     >/dev/null && eval "$(uv generate-shell-completion zsh)"
+
+# --- secrets (kept out of dotfiles; chmod 600) -------------
+[ -f "$HOME/.zshrc_secrets" ] && source "$HOME/.zshrc_secrets"

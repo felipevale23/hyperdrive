@@ -1,0 +1,22 @@
+--- a/modules/ii/bar/Media.qml	2026-09-05 17:42:03.170830173 -0300
++++ b/modules/ii/bar/Media.qml	2026-09-06 19:57:18.810040852 -0300
+@@ -6,6 +6,7 @@
+ 
+ import QtQuick
+ import QtQuick.Layouts
++import Quickshell
+ import Quickshell.Services.Mpris
+ import Quickshell.Hyprland
+ 
+@@ -37,6 +38,11 @@
+             } else if (event.button === Qt.ForwardButton || event.button === Qt.RightButton) {
+                 activePlayer.next();
+             } else if (event.button === Qt.LeftButton) {
++                const mapped = root.QsWindow?.mapFromItem(root, 0, 0);
++                if (mapped) {
++                    GlobalStates.mediaControlsAnchorX = mapped.x;
++                    GlobalStates.mediaControlsAnchorWidth = root.width;
++                }
+                 GlobalStates.mediaControlsOpen = !GlobalStates.mediaControlsOpen
+             }
+         }

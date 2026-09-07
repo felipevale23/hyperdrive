@@ -1,0 +1,42 @@
+# Maintainer: felipevale23
+# Meta package: pulls the whole hyperdrive desktop stack and wires up services.
+pkgname=hyperdrive-desktop
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="hyperdrive — Arch + Hyprland (end-4) desktop meta package"
+arch=('any')
+url="https://github.com/felipevale23/hyperdrive"
+license=('MIT')
+install="${pkgname}.install"
+depends=(
+    # session
+    hyprland xdg-desktop-portal-hyprland sddm kitty polkit
+    qt5-wayland qt6-wayland
+    # end-4 shell deps that live in official repos
+    quickshell wl-clipboard cliphist brightnessctl ddcutil
+    hypridle hyprlock hyprpicker wlogout fuzzel
+    dart-sass matugen
+    # audio
+    pipewire pipewire-alsa pipewire-pulse wireplumber pavucontrol
+    # sddm sugar-dark (Qt5) runtime
+    qt5-declarative qt5-graphicaleffects qt5-quickcontrols2 qt5-svg
+    # boot / containers
+    grub efibootmgr os-prober docker docker-buildx docker-compose
+    # shell + cli
+    zsh zoxide eza bat fzf fd ripgrep jq bottom btop neovim
+    # fonts
+    ttf-firacode-nerd ttf-meslo-nerd ttf-nerd-fonts-symbols
+    noto-fonts noto-fonts-emoji ttf-liberation ttf-fira-code
+    # net
+    networkmanager
+    hyperdrive-dotfiles
+)
+optdepends=(
+    'sddm-sugar-dark: login theme (AUR / [hyperdrive] repo)'
+    'oh-my-posh: zsh prompt (AUR / [hyperdrive] repo)'
+)
+
+package() {
+    install -d "${pkgdir}/usr/share/${pkgname}"
+    echo "${pkgver}" > "${pkgdir}/usr/share/${pkgname}/VERSION"
+}

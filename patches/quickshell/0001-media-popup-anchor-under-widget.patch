@@ -1,0 +1,22 @@
+--- a/modules/ii/mediaControls/MediaControls.qml	2026-09-05 17:42:03.172717880 -0300
++++ b/modules/ii/mediaControls/MediaControls.qml	2026-09-06 19:57:39.273374730 -0300
+@@ -100,7 +100,18 @@
+             margins {
+                 top: Config.options.bar.vertical ? ((panelWindow.screen.height / 2) - widgetHeight * 1.5) : Appearance.sizes.barHeight
+                 bottom: Appearance.sizes.barHeight
+-                left: Config.options.bar.vertical ? Appearance.sizes.barHeight : ((panelWindow.screen.width / 2) - (osdWidth / 2) - widgetWidth)
++                // Horizontal bar: center the popup exactly under the Media bar widget
++                // (screen X reported by Media.qml via GlobalStates), clamped on-screen.
++                left: {
++                    if (Config.options.bar.vertical) return Appearance.sizes.barHeight;
++                    const gap = Appearance.sizes.hyprlandGapsOut;
++                    const anchorX = GlobalStates.mediaControlsAnchorX;
++                    if (anchorX < 0)
++                        return (panelWindow.screen.width / 2) - (osdWidth / 2) - root.widgetWidth;
++                    const desired = anchorX + (GlobalStates.mediaControlsAnchorWidth - root.widgetWidth) / 2;
++                    const maxLeft = panelWindow.screen.width - root.widgetWidth - gap;
++                    return Math.max(gap, Math.min(desired, maxLeft));
++                }
+                 right: Appearance.sizes.barHeight
+             }
+ 

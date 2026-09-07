@@ -1,0 +1,70 @@
+# Packages for the LIVE ISO. Keep this lean — the full desktop is installed on
+# the target system by scripts/postinstall.sh (end-4 illogical-impulse + the
+# hyperdrive-desktop meta package from the [hyperdrive] repo).
+
+## --- base live system ---
+base
+linux-lts
+linux-firmware
+intel-ucode
+amd-ucode
+mkinitcpio
+mkinitcpio-archiso
+btrfs-progs
+dosfstools
+e2fsprogs
+sudo
+zsh
+
+## --- boot / firmware ---
+grub
+efibootmgr
+edk2-shell
+memtest86+-efi
+
+## --- network ---
+networkmanager
+iwd
+wireless-regdb
+openssh
+
+## --- installer + tooling ---
+archinstall
+git
+rsync
+wget
+curl
+jq
+gptfdisk
+parted
+arch-install-scripts
+reflector
+pacman-contrib
+
+## --- Wayland / Hyprland session so the live env is usable ---
+hyprland
+xdg-desktop-portal-hyprland
+qt5-wayland
+qt6-wayland
+polkit
+sddm
+kitty
+pipewire
+pipewire-alsa
+pipewire-pulse
+wireplumber
+wl-clipboard
+brightnessctl
+
+## --- fonts (live legibility; full set installed post-install) ---
+ttf-firacode-nerd
+ttf-meslo-nerd
+ttf-nerd-fonts-symbols
+noto-fonts
+noto-fonts-emoji
+
+## --- misc live niceties ---
+neovim
+less
+man-db
+usbutils
