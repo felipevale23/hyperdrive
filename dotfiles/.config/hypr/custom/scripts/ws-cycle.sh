@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-# Cycle workspace focus through only the workspaces that have windows
+# Cycle workspace focus through only the regular workspaces that have windows
 # (plus the current one), wrapping around. Arg: "next" (default) or "prev".
 #
-# hyprctl's plain `dispatch workspace <id>` is rejected under Hyprland's Lua
-# config parser, so we dispatch via the Lua form.
+# Runs as a plain command (from keybinds.lua via exec_cmd), so the classic
+# `hyprctl dispatch workspace <id>` IPC call is what we want here — the Lua
+# config format only affects hyprland.conf parsing, not the IPC socket.
 set -euo pipefail
 
 dir="${1:-next}"
 
 cur="$(hyprctl activeworkspace -j | jq -r '.id')"
 
-# Non-empty workspaces + the current one, unique, numerically sorted.
+# Non-empty regular workspaces (id > 0 excludes special/scratchpad) + the
+# current one, unique, numerically sorted.
 mapfile -t ids < <(
-    { hyprctl workspaces -j | jq -r '.[] | select(.windows > 0) | .id'; echo "$cur"; } \
+    { hyprctl workspaces -j | jq -r '.[] | select(.windows > 0 and .id > 0) | .id'; echo "$cur"; } \
         | sort -n -u
 )
 
@@ -31,4 +33,4 @@ else
     next=$(( (idx + 1) % n ))
 fi
 
-hyprctl dispatch "hl.dsp.focus({workspace=\"${ids[$next]}\"})"
+hyprctl dispatch workspace "${ids[$next]}"

@@ -2,12 +2,14 @@ post_install() {
     systemctl enable sddm.service || true
     systemctl enable docker.service || true
     getent group docker >/dev/null || groupadd docker
+    getent group input >/dev/null || groupadd input
     cat <<'EOF'
 
   hyperdrive-desktop installed.
 
   Next:
-    * add yourself to the docker group:  usermod -aG docker <you>
+    * add yourself to the docker + input groups:  usermod -aG docker,input <you>
+      (input = raw /dev/input access for the Alt-Tab workspace switcher)
     * deploy dotfiles as your user:       hyperdrive-apply-dotfiles
     * set up GRUB theme / grub.cfg:       see hyperdrive postinstall.sh
     * reboot

@@ -80,6 +80,9 @@ sudo grub-mkconfig -o /boot/grub/grub.cfg
 msg "services"
 sudo systemctl enable --now docker
 sudo systemctl enable sddm
-sudo usermod -aG docker "$USER"
+# docker: rootless-equivalent socket access. input: raw /dev/input/event* reads
+# for the Alt-Tab watcher (dotfiles/.config/hypr/custom/scripts/alt-release-watch.py).
+sudo usermod -aG docker,input "$USER"
 
-msg "done — reboot. Add your tokens to ~/.zshrc_secrets (see ~/.zshrc_secrets.example)."
+msg "done — log out/in (or reboot) so the docker+input groups take effect."
+echo "     Add your tokens to ~/.zshrc_secrets (see ~/.zshrc_secrets.example)."
