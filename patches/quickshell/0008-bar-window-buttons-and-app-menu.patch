@@ -1,0 +1,551 @@
+--- a/modules/ii/bar/BarContent.qml
++++ b/modules/ii/bar/BarContent.qml
+@@ -89,12 +89,70 @@
+                 colBackground: barLeftSideMouseArea.hovered ? Appearance.colors.colLayer1Hover : ColorUtils.transparentize(Appearance.colors.colLayer1Hover, 1)
+             }
+ 
+-            ActiveWindow {
+-                Layout.leftMargin: 10 + (leftSidebarButton.visible ? 0 : Appearance.rounding.screenRounding)
+-                Layout.rightMargin: Appearance.rounding.screenRounding
+-                Layout.fillWidth: true
++            Item { // Window title; hovering it swaps in the window's buttons
++                id: titleArea
++                // Revealed by hovering the title; kept while the pointer stays on the
++                // left part of the bar, since the menus slide left under it
++                property bool revealed: false
++                readonly property bool showControls: revealed && windowControls.active
++                Connections {
++                    target: titleHover
++                    function onHoveredChanged() {
++                        if (titleHover.hovered) titleArea.revealed = true;
++                    }
++                }
++                Connections {
++                    target: barLeftSideMouseArea
++                    function onHoveredChanged() {
++                        if (!barLeftSideMouseArea.hovered) titleArea.revealed = false;
++                    }
++                }
++                // 8 + the sidebar button's / menu titles' own 8px padding = 16px gaps
++                Layout.leftMargin: 8 + (leftSidebarButton.visible ? 0 : Appearance.rounding.screenRounding)
++                Layout.rightMargin: appMenu.visible ? 8 : Appearance.rounding.screenRounding
++                Layout.fillWidth: !appMenu.visible
++                Layout.maximumWidth: appMenu.visible ? 220 : Number.POSITIVE_INFINITY
+                 Layout.fillHeight: true
++                implicitWidth: showControls ? windowControls.implicitWidth : activeWindow.implicitWidth
++                Behavior on implicitWidth {
++                    animation: Appearance.animation.elementMoveFast.numberAnimation.createObject(this)
++                }
+                 visible: root.useShortenedForm === 0
++
++                HoverHandler {
++                    id: titleHover
++                }
++
++                ActiveWindow {
++                    id: activeWindow
++                    anchors.fill: parent
++                    opacity: titleArea.showControls ? 0 : 1
++                    visible: opacity > 0
++                    Behavior on opacity {
++                        animation: Appearance.animation.elementMoveFast.numberAnimation.createObject(this)
++                    }
++                }
++
++                WindowControls {
++                    id: windowControls
++                    anchors.verticalCenter: parent.verticalCenter
++                    anchors.left: parent.left
++                    opacity: titleArea.showControls ? 1 : 0
++                    visible: opacity > 0
++                    Behavior on opacity {
++                        animation: Appearance.animation.elementMoveFast.numberAnimation.createObject(this)
++                    }
++                }
++            }
++
++            AppMenu { // Global menu (File, Edit, View…) of the focused Qt/KDE app
++                id: appMenu
++                Layout.alignment: Qt.AlignVCenter
++            }
++
++            Item {
++                visible: appMenu.visible
++                Layout.fillWidth: true
+             }
+         }
+     }
+--- a/modules/ii/bar/WindowControls.qml
++++ b/modules/ii/bar/WindowControls.qml
+@@ -0,0 +1,88 @@
++import qs.services
++import qs.modules.common
++import qs.modules.common.widgets
++import QtQuick
++import QtQuick.Layouts
++import Quickshell
++import Quickshell.Wayland
++import Quickshell.Hyprland
++
++// macOS-style close / minimize / maximize buttons for the focused window.
++// BarContent swaps them in for the window title while the title is hovered
++// (like KDE's Window Buttons applet).
++Item {
++    id: root
++    readonly property HyprlandMonitor monitor: Hyprland.monitorFor(root.QsWindow.window?.screen)
++    readonly property var client: HyprlandData.windowByAddress[`0x${Hyprland.activeToplevel?.address}`]
++    readonly property bool active: client !== undefined
++        && client?.workspace?.id === root.monitor?.activeWorkspace?.id
++    readonly property bool maximized: client?.fullscreen === 1
++
++    implicitWidth: row.implicitWidth
++    implicitHeight: row.implicitHeight
++
++    // Target the shown window explicitly: focus may move before the click lands
++    readonly property string target: `window = "address:${client?.address}"`
++
++    function dispatch(cmd) {
++        Quickshell.execDetached(["hyprctl", "dispatch", cmd]);
++    }
++
++    component TrafficLight: Rectangle {
++        id: light
++        required property color lightColor
++        required property string glyph
++        property bool showGlyph: false
++        signal clicked()
++        implicitWidth: 12
++        implicitHeight: 12
++        radius: width / 2
++        color: mouseArea.pressed ? Qt.darker(lightColor, 1.25) : lightColor
++
++        MaterialSymbol {
++            anchors.fill: parent
++            horizontalAlignment: Text.AlignHCenter
++            verticalAlignment: Text.AlignVCenter
++            text: light.glyph
++            iconSize: 9
++            fill: 1
++            color: "#282A36"
++            opacity: light.showGlyph ? 1 : 0
++            Behavior on opacity {
++                animation: Appearance.animation.elementMoveFast.numberAnimation.createObject(this)
++            }
++        }
++
++        MouseArea {
++            id: mouseArea
++            anchors.fill: parent
++            cursorShape: Qt.PointingHandCursor
++            onClicked: light.clicked()
++        }
++    }
++
++    RowLayout {
++        id: row
++        anchors.verticalCenter: parent.verticalCenter
++        spacing: 7
++
++        TrafficLight {
++            showGlyph: true
++            lightColor: "#FF5555"
++            glyph: "close"
++            onClicked: root.dispatch(`hl.dsp.window.close({ ${root.target} })`)
++        }
++        TrafficLight {
++            showGlyph: true
++            lightColor: "#F1FA8C"
++            glyph: "remove"
++            onClicked: root.dispatch(`hl.dsp.window.move({ workspace = "special:special", follow = false, ${root.target} })`)
++        }
++        TrafficLight {
++            showGlyph: true
++            lightColor: "#50FA7B"
++            glyph: root.maximized ? "close_fullscreen" : "open_in_full"
++            onClicked: root.dispatch(`hl.dsp.window.fullscreen({ mode = "maximized", action = "toggle", ${root.target} })`)
++        }
++    }
++}
+--- a/modules/ii/bar/AppMenu.qml
++++ b/modules/ii/bar/AppMenu.qml
+@@ -0,0 +1,125 @@
++pragma ComponentBehavior: Bound
++
++import qs.services
++import qs.modules.common
++import qs.modules.common.widgets
++import qs.modules.common.functions
++import QtQuick
++import QtQuick.Layouts
++import Quickshell
++import Quickshell.Io
++import Quickshell.Hyprland
++
++// macOS-style global menu: the focused app's menu bar (File, Edit, View…),
++// read over DBus by ~/.local/bin/appmenu. Only Qt/KDE apps export one.
++Item {
++    id: root
++    readonly property var client: HyprlandData.windowByAddress[`0x${Hyprland.activeToplevel?.address}`]
++    readonly property int pid: client?.pid ?? 0
++    property string service: ""
++    property string menuPath: ""
++    property var items: []
++    property int openIndex: -1
++
++    visible: items.length > 0
++    implicitWidth: visible ? row.implicitWidth : 0
++    implicitHeight: row.implicitHeight
++
++    onPidChanged: refresh()
++    Component.onCompleted: refresh()
++
++    property int retries: 0
++
++    function refresh() {
++        root.retries = 0;
++        query();
++    }
++
++    function query() {
++        root.openIndex = -1;
++        topProc.running = false;
++        if (root.pid <= 0) {
++            root.items = [];
++            return;
++        }
++        topProc.command = [`${Quickshell.env("HOME")}/.local/bin/appmenu`, "top", String(root.pid)];
++        topProc.running = true;
++    }
++
++    Timer {
++        id: retryTimer
++        interval: 700
++        onTriggered: root.query()
++    }
++
++    Process {
++        id: topProc
++        stdout: StdioCollector {
++            onStreamFinished: {
++                try {
++                    const data = JSON.parse(text);
++                    root.service = data.service;
++                    root.menuPath = data.path;
++                    root.items = data.items;
++                } catch (e) {
++                    root.items = [];
++                }
++                // A just-opened window may not have exported its menu yet
++                if (root.items.length === 0 && root.pid > 0 && root.retries < 3) {
++                    root.retries++;
++                    retryTimer.restart();
++                }
++            }
++        }
++    }
++
++    RowLayout {
++        id: row
++        anchors.verticalCenter: parent.verticalCenter
++        spacing: 0
++
++        Repeater {
++            model: root.items
++            delegate: RippleButton {
++                id: menuButton
++                required property var modelData
++                required property int index
++                implicitHeight: 28
++                horizontalPadding: 8
++                implicitWidth: label.implicitWidth + horizontalPadding * 2
++                buttonRadius: Appearance.rounding.small
++                toggled: root.openIndex === index
++                colBackgroundToggled: Appearance.colors.colLayer1Active
++                colBackgroundToggledHover: Appearance.colors.colLayer1Active
++
++                downAction: () => root.openIndex = (root.openIndex === index) ? -1 : index
++                // Like macOS: while a menu is open, hovering another title switches to it
++                onHoveredChanged: if (hovered && root.openIndex >= 0 && root.openIndex !== index) root.openIndex = index
++
++                contentItem: StyledText {
++                    id: label
++                    anchors.centerIn: parent
++                    text: menuButton.modelData.label
++                    font.pixelSize: Appearance.font.pixelSize.small
++                    color: Appearance.colors.colOnLayer0
++                }
++
++                Loader {
++                    active: root.openIndex === menuButton.index
++                    sourceComponent: AppMenuPopup {
++                        service: root.service
++                        menuPath: root.menuPath
++                        menuId: menuButton.modelData.id
++                        anchor {
++                            window: menuButton.QsWindow.window
++                            item: menuButton
++                            edges: (Config.options.bar.bottom ? Edges.Top : Edges.Bottom) | Edges.Left
++                            gravity: (Config.options.bar.bottom ? Edges.Top : Edges.Bottom) | Edges.Right
++                        }
++                        onDismissed: root.openIndex = -1
++                    }
++                }
++            }
++        }
++    }
++}
+--- a/modules/ii/bar/AppMenuPopup.qml
++++ b/modules/ii/bar/AppMenuPopup.qml
+@@ -0,0 +1,252 @@
++pragma ComponentBehavior: Bound
++
++import qs.services
++import qs.modules.common
++import qs.modules.common.widgets
++import qs.modules.common.functions
++import QtQuick
++import QtQuick.Controls
++import QtQuick.Layouts
++import Quickshell
++import Quickshell.Io
++import Quickshell.Hyprland
++
++// Dropdown for one AppMenu title. Styled after SysTrayMenu; submenus are
++// pushed onto a stack with a Back entry.
++PopupWindow {
++    id: root
++    required property string service
++    required property string menuPath
++    required property int menuId
++
++    signal dismissed
++
++    color: "transparent"
++    visible: true
++    property real padding: Appearance.sizes.elevationMargin
++
++    implicitHeight: popupBackground.implicitHeight + root.padding * 2
++    implicitWidth: popupBackground.implicitWidth + root.padding * 2
++
++    function activate(entry) {
++        Quickshell.execDetached([`${Quickshell.env("HOME")}/.local/bin/appmenu`, "click", root.service, root.menuPath, String(entry.id)]);
++        root.dismissed();
++    }
++
++    HyprlandFocusGrab {
++        active: true
++        windows: [root, root.anchor.window]
++        onCleared: root.dismissed()
++    }
++
++    MouseArea {
++        anchors.fill: parent
++        acceptedButtons: Qt.BackButton | Qt.RightButton
++        onPressed: event => {
++            if (stackView.depth > 1)
++                stackView.pop();
++        }
++
++        StyledRectangularShadow {
++            target: popupBackground
++            opacity: popupBackground.opacity
++        }
++
++        Rectangle {
++            id: popupBackground
++            readonly property real padding: 4
++            anchors {
++                left: parent.left
++                top: Config.options.bar.bottom ? undefined : parent.top
++                bottom: Config.options.bar.bottom ? parent.bottom : undefined
++                margins: root.padding
++            }
++
++            color: Appearance.colors.colLayer0
++            radius: Appearance.rounding.normal
++            border.width: 1
++            border.color: Appearance.colors.colLayer0Border
++            clip: true
++
++            opacity: 0
++            Component.onCompleted: opacity = 1
++            implicitWidth: stackView.implicitWidth + popupBackground.padding * 2
++            implicitHeight: stackView.implicitHeight + popupBackground.padding * 2
++
++            Behavior on opacity {
++                animation: Appearance.animation.elementMoveFast.numberAnimation.createObject(this)
++            }
++
++            StackView {
++                id: stackView
++                anchors {
++                    fill: parent
++                    margins: popupBackground.padding
++                }
++                pushEnter: NoAnim {}
++                pushExit: NoAnim {}
++                popEnter: NoAnim {}
++                popExit: NoAnim {}
++
++                implicitWidth: currentItem?.implicitWidth ?? 0
++                implicitHeight: currentItem?.implicitHeight ?? 0
++
++                initialItem: SubMenu {
++                    menuId: root.menuId
++                }
++            }
++        }
++    }
++
++    component NoAnim: Transition {
++        NumberAnimation {
++            duration: 0
++        }
++    }
++
++    component SubMenu: ColumnLayout {
++        id: submenu
++        required property int menuId
++        property bool isSubMenu: false
++        property var entries: []
++        readonly property bool checkColumnNeeded: entries.some(e => e.toggleType !== "")
++
++        spacing: 0
++        StackView.onRemoved: destroy()
++
++        Process {
++            running: true
++            command: [`${Quickshell.env("HOME")}/.local/bin/appmenu`, "open", root.service, root.menuPath, String(submenu.menuId)]
++            stdout: StdioCollector {
++                onStreamFinished: {
++                    try {
++                        submenu.entries = JSON.parse(text);
++                    } catch (e) {
++                        submenu.entries = [];
++                    }
++                }
++            }
++        }
++
++        MenuRow {
++            visible: submenu.isSubMenu
++            symbol: "chevron_left"
++            label: Translation.tr("Back")
++            onActivated: stackView.pop()
++        }
++
++        Rectangle {
++            visible: submenu.isSubMenu
++            Layout.fillWidth: true
++            implicitHeight: 1
++            color: Appearance.m3colors.m3outlineVariant
++            Layout.topMargin: 4
++            Layout.bottomMargin: 4
++        }
++
++        Repeater {
++            model: submenu.entries
++            delegate: Loader {
++                id: entryLoader
++                required property var modelData
++                Layout.fillWidth: true
++                sourceComponent: modelData.separator ? separatorComponent : rowComponent
++
++                Component {
++                    id: separatorComponent
++                    Item {
++                        implicitHeight: 9
++                        Rectangle {
++                            anchors.verticalCenter: parent.verticalCenter
++                            width: parent.width
++                            height: 1
++                            color: Appearance.m3colors.m3outlineVariant
++                        }
++                    }
++                }
++
++                Component {
++                    id: rowComponent
++                    MenuRow {
++                        entry: entryLoader.modelData
++                        checkColumn: submenu.checkColumnNeeded
++                        onActivated: {
++                            if (entry.hasChildren)
++                                stackView.push(subMenuComponent.createObject(null, {
++                                    menuId: entry.id,
++                                    isSubMenu: true
++                                }));
++                            else
++                                root.activate(entry);
++                        }
++                    }
++                }
++            }
++        }
++    }
++
++    component MenuRow: RippleButton {
++        id: menuRow
++        property var entry: null
++        property bool checkColumn: false
++        property string symbol: ""
++        property string label: entry?.label ?? ""
++        signal activated
++
++        enabled: entry?.enabled ?? true
++        opacity: enabled ? 1 : 0.45
++        buttonRadius: popupBackground.radius - popupBackground.padding
++        horizontalPadding: 12
++        implicitWidth: rowContent.implicitWidth + horizontalPadding * 2
++        implicitHeight: 32
++        Layout.fillWidth: true
++
++        releaseAction: () => menuRow.activated()
++
++        contentItem: RowLayout {
++            id: rowContent
++            anchors {
++                verticalCenter: parent.verticalCenter
++                left: parent.left
++                right: parent.right
++                leftMargin: menuRow.horizontalPadding
++                rightMargin: menuRow.horizontalPadding
++            }
++            spacing: 8
++
++            MaterialSymbol {
++                visible: menuRow.symbol.length > 0 || menuRow.checkColumn
++                Layout.preferredWidth: 18
++                iconSize: 18
++                text: menuRow.symbol.length > 0 ? menuRow.symbol
++                    : (menuRow.entry?.toggleState === 1) ? (menuRow.entry.toggleType === "radio" ? "radio_button_checked" : "check")
++                    : ""
++            }
++
++            StyledText {
++                Layout.fillWidth: true
++                text: menuRow.label
++                font.pixelSize: Appearance.font.pixelSize.smallie
++            }
++
++            StyledText {
++                visible: text.length > 0
++                Layout.leftMargin: 24
++                text: menuRow.entry?.shortcut ?? ""
++                font.pixelSize: Appearance.font.pixelSize.smaller
++                color: Appearance.colors.colSubtext
++            }
++
++            MaterialSymbol {
++                visible: menuRow.entry?.hasChildren ?? false
++                text: "chevron_right"
++                iconSize: 18
++            }
++        }
++    }
++
++    Component {
++        id: subMenuComponent
++        SubMenu {}
++    }
++}

@@ -27,3 +27,43 @@ hl.config({
         force_split = 2,   -- new window always takes the right/bottom side
     }
 })
+
+-- Plasma-style title bars (hyprbars plugin): title on the left,
+-- minimize / maximize / close on the right. The plugin .so is loaded in
+-- custom/execs.lua; hl.plugin.hyprbars is nil until then (Hyprland re-parses
+-- this file once the plugin loads), hence the guard.
+hl.config({
+    plugin = {
+        hyprbars = {
+            bar_height              = 28,
+            bar_color               = "rgba(282A36FF)",
+            bar_text_font           = "JetBrainsMono Nerd Font",
+            bar_text_size           = 11,
+            bar_text_align          = "left",
+            bar_padding             = 12,
+            bar_button_padding      = 8,
+            bar_buttons_alignment   = "right",
+            bar_part_of_window      = true,
+            bar_precedence_over_border = true,
+            on_double_click         = "hyprctl dispatch 'hl.dsp.window.fullscreen({ mode = \"maximized\", action = \"toggle\" })'",
+        },
+    },
+})
+
+if hl.plugin and hl.plugin.hyprbars then
+    -- Buttons are laid out right-to-left: first added = rightmost.
+    hl.plugin.hyprbars.add_button({
+        bg_color = "rgba(FF5555FF)", fg_color = "rgba(282A36FF)", size = 16, icon = "",
+        action = "hyprctl dispatch 'hl.dsp.window.close()'",
+    })
+    hl.plugin.hyprbars.add_button({
+        bg_color = "rgba(44475AFF)", fg_color = "rgba(F8F8F2FF)", size = 16, icon = "",
+        action = "hyprctl dispatch 'hl.dsp.window.fullscreen({ mode = \"maximized\", action = \"toggle\" })'",
+    })
+    -- Hyprland has no real minimize: send the window to the scratchpad
+    -- (SUPER+S brings it back).
+    hl.plugin.hyprbars.add_button({
+        bg_color = "rgba(44475AFF)", fg_color = "rgba(F8F8F2FF)", size = 16, icon = "",
+        action = "hyprctl dispatch 'hl.dsp.window.move({ workspace = \"special:special\", follow = false })'",
+    })
+end

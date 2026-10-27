@@ -13,3 +13,13 @@ end
 
 -- KDE Connect daemon (phone integration; tray icon appears once it's up)
 autostart("/usr/lib/kdeconnectd")
+
+hl.on("hyprland.start", function ()
+    -- Title bars with min/max/close buttons (hyprbars, AUR hyprland-plugin-hyprbars;
+    -- falls back to a hyprpm build). Config in custom/general.lua.
+    autostart([[sh -c 'p=/usr/lib/libhyprbars.so; [ -f "$p" ] || p="/var/cache/hyprpm/$USER/hyprland-plugins/hyprbars.so"; hyprctl plugin load "$p"']])
+
+    -- Global app menu in the top bar: Qt/KDE apps only export their menu bar
+    -- over DBus when an AppMenu registrar exists (~/.local/bin/appmenu).
+    autostart("$HOME/.local/bin/appmenu registrar")
+end)

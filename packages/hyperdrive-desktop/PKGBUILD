@@ -31,7 +31,9 @@ depends=(
     nodejs npm yarn python-pip python-pipx rustup
     # desktop utils + file manager (Dolphin replaces nautilus as the default)
     dolphin dolphin-plugins ark kio-extras kdegraphics-thumbnailers
-    kcalc kdeconnect sshfs xdg-utils
+    konsole kcalc kdeconnect sshfs xdg-utils
+    # ~/.local/bin/appmenu (global app menu in the top bar)
+    python-gobject
     # fonts (ttf-jetbrains-mono-nerd is the kitty default in dotfiles/.config/kitty)
     ttf-firacode-nerd ttf-jetbrains-mono-nerd ttf-meslo-nerd ttf-nerd-fonts-symbols
     noto-fonts noto-fonts-emoji ttf-liberation ttf-fira-code

@@ -1,0 +1,24 @@
+[Desktop Entry]
+DefaultProfile=Profile 1.profile
+
+[General]
+ConfigVersion=1
+
+[KonsoleWindow]
+MenuBarVisible=false
+UseSingleInstance=true
+ShowMenuBarByDefault=false
+
+[MainWindow]
+ToolBarsMovable=Enabled
+mainToolBarVisible=false
+
+[Notification Messages]
+CloseAllTabs=false
+
+[UiSettings]
+ColorScheme=
+
+[TabBar]
+TabBarVisibility=ShowTabBarWhenNeeded
+

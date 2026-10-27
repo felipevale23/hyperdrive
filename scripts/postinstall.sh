@@ -117,12 +117,13 @@ ZINIT_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/zinit/zinit.git"
     https://github.com/zdharma-continuum/zinit.git "$ZINIT_HOME"
 
 # ---------------------------------------------------------------------------
-msg "extra apps (KDE utils, Dolphin, KDE Connect)"
+msg "extra apps (KDE utils, Dolphin, Konsole, KDE Connect)"
 sudo pacman -S --needed --noconfirm \
     xdg-utils \
     dolphin dolphin-plugins ark kio-extras kdegraphics-thumbnailers \
-    kcalc \
-    kdeconnect sshfs
+    konsole kcalc \
+    kdeconnect sshfs \
+    python-gobject   # ~/.local/bin/appmenu (global app menu in the top bar)
 
 # Dolphin as the default file manager (end-4 ships nautilus — kept as fallback)
 xdg-mime default org.kde.dolphin.desktop inode/directory || true
@@ -162,7 +163,9 @@ if ! command -v paru >/dev/null; then
     tmp="$(mktemp -d)"; git clone https://aur.archlinux.org/paru-bin.git "$tmp"
     ( cd "$tmp" && makepkg -si --noconfirm ); rm -rf "$tmp"
 fi
-paru -S --needed --noconfirm sddm-sugar-dark oh-my-posh-bin asdf-vm || true
+# hyprland-plugin-hyprbars: window title bars (loaded in custom/execs.lua); it
+# pins the Hyprland minor version, so rebuild it after Hyprland updates
+paru -S --needed --noconfirm sddm-sugar-dark oh-my-posh-bin asdf-vm hyprland-plugin-hyprbars || true
 
 # ---------------------------------------------------------------------------
 msg "LunarVim (lvim — the dotfiles set EDITOR=lvim, alias vim=lvim)"
@@ -195,6 +198,26 @@ if [[ -d "$QSDIR" ]]; then
             echo "  SKIP  $(basename "$p") (already applied or upstream moved)"
         fi
     done
+fi
+
+# ---------------------------------------------------------------------------
+msg "end-4 settings"
+# dock hides until hovered (end-4 default pins it open)
+II_CONF="$HOME/.config/illogical-impulse/config.json"
+if [[ -f "$II_CONF" ]]; then
+    tmp="$(mktemp)"
+    jq '.dock.pinnedOnStartup = false' "$II_CONF" > "$tmp" && cat "$tmp" > "$II_CONF"
+    rm -f "$tmp"
+fi
+# keep Konsole on the dotfiles' Kitty colorscheme: kde-material-you-colors
+# otherwise rewrites the profile's ColorScheme on every wallpaper change
+KMYC_CONF="$HOME/.config/kde-material-you-colors/config.conf"
+if [[ -f "$KMYC_CONF" ]]; then
+    if grep -qE '^[#[:space:]]*disable_konsole[[:space:]]*=' "$KMYC_CONF"; then
+        sed -i -E 's/^[#[:space:]]*disable_konsole[[:space:]]*=.*/disable_konsole = True/' "$KMYC_CONF"
+    else
+        printf '\ndisable_konsole = True\n' >> "$KMYC_CONF"
+    fi
 fi
 
 # ---------------------------------------------------------------------------

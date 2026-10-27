@@ -21,20 +21,31 @@
   subvol layout, `linux-lts` + microcode, a pacman hook that keeps `grubx64.efi` current
 - **Shell** — zsh (ML4W loader + zinit + oh-my-posh), `~/.zshrc_custom`, secrets in
   `~/.zshrc_secrets` (never committed)
-- **Terminal** — kitty, Windows-style `Ctrl+C`/`Ctrl+V` (still SIGINT with no selection)
+- **Terminal** — kitty, Windows-style `Ctrl+C`/`Ctrl+V` (still SIGINT with no selection);
+  Konsole styled to match (same Dracula colors, font, padding, beam cursor, no scrollbar)
 - **CLI** — zoxide, eza, bat, fzf, fd, ripgrep, jq, bottom, btop, zinit (pre-seeded)
 - **Dev** — nodejs/npm/yarn, python + pip/pipx, rustup (stable toolchain),
   `asdf-vm` for per-project versions, neovim + LunarVim (`lvim`)
 - **TeX** (opt-in, `HYPERDRIVE_TEX=1`) — TeX Live (XeLaTeX + biblatex/biber +
   latexmk), zathura, and [`texflow`](https://github.com/felipevale23/texflow)
 - **Apps** — Dolphin (default file manager, `Super+E`; nautilus kept as fallback),
-  kcalc, KDE Connect (autostarts via `custom/execs.lua`)
+  Konsole, kcalc, KDE Connect (autostarts via `custom/execs.lua`)
+- **Window title bars** — `hyprbars` (AUR `hyprland-plugin-hyprbars`) with
+  minimize / maximize / close; maximized windows drop theirs (`custom/rules.lua`)
+- **Global app menu** — the focused Qt/KDE app's menus (File, Edit, View…) in the
+  top bar, macOS-style. Hyprland lacks KDE's appmenu protocol, so
+  `~/.local/bin/appmenu` stands in a `com.canonical.AppMenu.Registrar` and reads the
+  menus over DBus. Qt/KDE apps only; apps started before it need a restart
+- **Dock** — unpinned: hidden until you hover the bottom edge
 - **Containers** — Docker CE, `overlay2` pinned (btrfs root)
 - **Custom patches** (`patches/quickshell/`):
   - media-controls popup anchors under the bar widget
   - `overviewWorkspacesOpen` global shortcut
   - month calendar in the clock hover popup
   - media widget moved to the right of the bar
+  - bar window title fixed on single/non-zero-id monitors (was always "Desktop")
+  - hover the window title to swap in macOS-style close / minimize / maximize
+    buttons; the app menu sits beside it
 - **Custom keybind** — Windows-style `Alt+Tab` workspace switcher (`dotfiles/.config/hypr/custom/`):
   tap = flip to previous workspace; hold Alt + tab = overview picker cycling only
   non-empty workspaces; an evdev watcher closes it on Alt release

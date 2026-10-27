@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""Global app menu bridge for Hyprland + Quickshell.
+
+Hyprland lacks the org_kde_kwin_appmenu Wayland protocol, so Qt/KDE apps
+never tell the shell where their menu bar lives. But Qt does export the menu
+over DBus (com.canonical.dbusmenu at /MenuBar/N) as long as an
+com.canonical.AppMenu.Registrar service exists. This script provides that
+registrar and lets the Quickshell bar find a window's menu by its PID.
+
+  appmenu registrar              own the registrar name (run once, at login)
+  appmenu top <pid>              JSON: {service, path, items[]} top-level menus
+  appmenu open <svc> <path> <id> JSON: children of menu item <id>
+  appmenu click <svc> <path> <id>
+"""
+import json
+import sys
+
+from gi.repository import Gio, GLib
+
+DBUSMENU = "com.canonical.dbusmenu"
+PROPS = ["label", "enabled", "visible", "type", "toggle-type", "toggle-state",
+         "shortcut", "children-display"]
+
+REGISTRAR_XML = """<node><interface name="com.canonical.AppMenu.Registrar">
+<method name="RegisterWindow"><arg type="u" direction="in"/><arg type="o" direction="in"/></method>
+<method name="UnregisterWindow"><arg type="u" direction="in"/></method>
+<method name="GetMenuForWindow"><arg type="u" direction="in"/>
+  <arg type="s" direction="out"/><arg type="o" direction="out"/></method>
+</interface></node>"""
+
+
+def bus():
+    return Gio.bus_get_sync(Gio.BusType.SESSION, None)
+
+
+def call(conn, service, path, iface, method, args=None, reply=None):
+    return conn.call_sync(service, path, iface, method, args,
+                          GLib.VariantType(reply) if reply else None,
+                          Gio.DBusCallFlags.NONE, 2000, None)
+
+
+def run_registrar():
+    node = Gio.DBusNodeInfo.new_for_xml(REGISTRAR_XML)
+
+    # Wayland windows have no X11 id, so registrations are meaningless; we
+    # only need the name to exist so Qt decides a global menu is available.
+    def on_call(conn, sender, path, iface, method, params, inv):
+        if method == "GetMenuForWindow":
+            inv.return_value(GLib.Variant("(so)", ("", "/")))
+        else:
+            inv.return_value(None)
+
+    def on_acquired(conn, name):
+        conn.register_object("/com/canonical/AppMenu/Registrar",
+                             node.interfaces[0], on_call, None, None)
+
+    def on_lost(conn, name):
+        sys.exit("appmenu: registrar name already taken")
+
+    Gio.bus_own_name(Gio.BusType.SESSION, "com.canonical.AppMenu.Registrar",
+                     Gio.BusNameOwnerFlags.NONE, None, on_acquired, on_lost)
+    GLib.MainLoop().run()
+
+
+def menubar_paths(conn, service):
+    try:
+        xml = call(conn, service, "/MenuBar", "org.freedesktop.DBus.Introspectable",
+                   "Introspect", reply="(s)").unpack()[0]
+    except GLib.Error:
+        return []
+    node = Gio.DBusNodeInfo.new_for_xml(xml)
+    return sorted((f"/MenuBar/{n.path}" for n in node.nodes),
+                  key=lambda p: int(p.rsplit("/", 1)[1]) if p.rsplit("/", 1)[1].isdigit() else 0)
+
+
+def find_menu(conn, pid):
+    names = call(conn, "org.freedesktop.DBus", "/org/freedesktop/DBus",
+                 "org.freedesktop.DBus", "ListNames", reply="(as)").unpack()[0]
+    for name in names:
+        if not name.startswith(":"):
+            continue
+        try:
+            owner_pid = call(conn, "org.freedesktop.DBus", "/org/freedesktop/DBus",
+                             "org.freedesktop.DBus", "GetConnectionUnixProcessID",
+                             GLib.Variant("(s)", (name,)), "(u)").unpack()[0]
+        except GLib.Error:
+            continue
+        if owner_pid != pid:
+            continue
+        paths = menubar_paths(conn, name)
+        if paths:
+            # A process with several windows exports several menu bars and
+            # nothing ties them to a Wayland window; take the first.
+            return name, paths[0]
+    return None, None
+
+
+def clean_label(label):
+    # dbusmenu marks mnemonics with "_" ("__" is a literal underscore)
+    return label.replace("__", "\0").replace("_", "").replace("\0", "_")
+
+
+def format_shortcut(shortcut):
+    if not shortcut:
+        return ""
+    names = {"Control": "Ctrl", "Super": "Meta"}
+    return ", ".join("+".join(names.get(k, k) for k in combo) for combo in shortcut)
+
+
+def item_json(node):
+    item_id, props, children = node
+    return {
+        "id": item_id,
+        "label": clean_label(props.get("label", "")),
+        "enabled": props.get("enabled", True),
+        "visible": props.get("visible", True),
+        "separator": props.get("type", "standard") == "separator",
+        "toggleType": props.get("toggle-type", ""),
+        "toggleState": props.get("toggle-state", -1),
+        "shortcut": format_shortcut(props.get("shortcut")),
+        "hasChildren": bool(children) or props.get("children-display") == "submenu",
+    }
+
+
+def tidy(items):
+    """Drop unlabeled entries and leading, trailing or doubled separators."""
+    out = []
+    for item in items:
+        if item["separator"]:
+            if out and not out[-1]["separator"]:
+                out.append(item)
+        elif item["label"]:
+            out.append(item)
+    while out and out[-1]["separator"]:
+        out.pop()
+    return out
+
+
+def layout(conn, service, path, parent, depth):
+    return call(conn, service, path, DBUSMENU, "GetLayout",
+                GLib.Variant("(iias)", (parent, depth, PROPS)), "(u(ia{sv}av))").unpack()[1]
+
+
+def about_to_show(conn, service, path, item_id):
+    try:
+        call(conn, service, path, DBUSMENU, "AboutToShow", GLib.Variant("(i)", (item_id,)), "(b)")
+    except GLib.Error:
+        pass
+
+
+def main(argv):
+    if len(argv) < 2:
+        sys.exit(__doc__)
+    cmd = argv[1]
+    if cmd == "registrar":
+        return run_registrar()
+
+    conn = bus()
+    if cmd == "top":
+        service, path = find_menu(conn, int(argv[2]))
+        items = []
+        if service:
+            about_to_show(conn, service, path, 0)
+            items = [item_json(c) for c in layout(conn, service, path, 0, 1)[2]]
+            items = [i for i in items if i["visible"] and i["label"]]
+        print(json.dumps({"service": service or "", "path": path or "", "items": items}))
+    elif cmd == "open":
+        service, path, item_id = argv[2], argv[3], int(argv[4])
+        about_to_show(conn, service, path, item_id)
+        items = [item_json(c) for c in layout(conn, service, path, item_id, 1)[2]]
+        print(json.dumps(tidy([i for i in items if i["visible"]])))
+    elif cmd == "click":
+        service, path, item_id = argv[2], argv[3], int(argv[4])
+        call(conn, service, path, DBUSMENU, "Event",
+             GLib.Variant("(isvu)", (item_id, "clicked", GLib.Variant("i", 0), 0)))
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main(sys.argv)
