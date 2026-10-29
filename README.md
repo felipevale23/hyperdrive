@@ -32,7 +32,9 @@
   starts hidden — toolbar button / `F4` — via a locked `[State][$i]` in `dolphinstaterc`),
   Konsole, kcalc, KDE Connect (autostarts via `custom/execs.lua`)
 - **Window title bars** — `hyprbars` (AUR `hyprland-plugin-hyprbars`) with
-  minimize / maximize / close; maximized windows drop theirs (`custom/rules.lua`)
+  minimize / maximize / close; maximized windows drop theirs (`custom/rules.lua`).
+  The first app on an empty workspace opens maximized; a second one un-maximizes it
+  and they tile side by side with title bars
 - **Global app menu** — the focused Qt/KDE app's menus (File, Edit, View…) in the
   top bar, macOS-style. Hyprland lacks KDE's appmenu protocol, so
   `~/.local/bin/appmenu` stands in a `com.canonical.AppMenu.Registrar` and reads the
