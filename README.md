@@ -19,8 +19,8 @@
 - **Login** — SDDM, `sugar-dark` theme
 - **Boot** — GRUB with the Elegant *mojave / window / left / dark* theme, btrfs `@`
   subvol layout, `linux-lts` + microcode, a pacman hook that keeps `grubx64.efi` current
-- **Shell** — zsh (ML4W loader + zinit + oh-my-posh), `~/.zshrc_custom`, secrets in
-  `~/.zshrc_secrets` (never committed)
+- **Shell** — zsh (ML4W loader + zinit + oh-my-posh), `spaceship.omp.toml` prompt with
+  Konsole-only icon padding, `~/.zshrc_custom`, secrets in `~/.zshrc_secrets` (never committed)
 - **Terminal** — kitty, Windows-style `Ctrl+C`/`Ctrl+V` (still SIGINT with no selection);
   Konsole styled to match (same Dracula colors, font, padding, beam cursor, no scrollbar)
 - **CLI** — zoxide, eza, bat, fzf, fd, ripgrep, jq, bottom, btop, zinit (pre-seeded)

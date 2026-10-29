@@ -1,0 +1,218 @@
+console_title_template = '{{ .Shell }} in {{ .Folder }}'
+version = 3
+final_space = false
+
+[palette]
+black = '#21222C'
+blue = '#BD93F9'
+cyan = '#61AFEF'
+green = '#50FA7B'
+orange = '#FF6E6E'
+os = '#ACB0BE'
+red = '#FF5555'
+text = '#494D64'
+white = '#F8F8F2'
+yellow = '#F1FA8C'
+
+[[blocks]]
+type = 'prompt'
+alignment = 'left'
+
+[[blocks.segments]]
+leading_diamond = ""
+trailing_diamond = ""
+template = "{{ .Icon }}{{ if .Env.KONSOLE_VERSION }} {{ end }}"  # Konsole clips wide icons; give it room
+foreground = "p:blue"
+background = "p:black"
+type = "os"
+style = "diamond"
+
+[blocks.segments.properties]
+cache_duration = "none"
+
+[[blocks.segments]]
+leading_diamond = ""
+trailing_diamond = ""
+template = "{{if .Root}} 📁 {{.UserName}}{{.HostName}}{{else}}{{ .UserName }}@{{ .HostName }}{{end}}"
+foreground = "p:white"
+background = "p:black"
+type = "session"
+style = "diamond"
+
+[blocks.segments.properties]
+cache_duration = 'none'
+
+[[blocks.segments]]
+leading_diamond = ""
+trailing_diamond = ""
+template = " {{ .Path }} "
+foreground = "p:white"
+background = "p:blue"
+type = "path"
+style = "diamond"
+exclude_folders = ['/super/secret/project']
+
+[blocks.segments.properties]
+cache_duration = "none"
+home_icon = "~"
+max_depth = 3
+style = "agnoster_short"
+
+[[blocks.segments]]
+trailing_diamond = ""
+template = " {{ .UpstreamIcon }}{{ .HEAD }}{{if .BranchStatus }} {{ .BranchStatus }}{{ end }}{{ if .Working.Changed }}  {{ .Working.String }}{{ end }}{{ if and (.Working.Changed) (.Staging.Changed) }} |{{ end }}{{ if .Staging.Changed }}  {{ .Staging.String }}{{ end }}{{ if gt .StashCount 0 }}  {{ .StashCount }}{{ end }} "
+foreground = "#193549"
+background = 'p:green'
+type = 'git'
+style = 'diamond'
+foreground_templates = [
+  "{{ if and (gt .Ahead 0) (gt .Behind 0) }} #ffffff {{ end }}",
+]
+background_templates = [
+  '{{ if or (.Working.Changed) (.Staging.Changed) }}#F1FA8C{{ end }}',
+  '{{ if (.Staging.Changed) }} #F1FA8C {{ end }}',
+  '{{ if (.Working.Changed) }} #F1FA8C {{ end }}',
+  '{{ if and (gt .Ahead 0) (gt .Behind 0) }}#FFCC80{{ end }}',
+  '{{ if gt .Ahead 0 }}#50FA7B{{ end }}',
+  '{{ if gt .Behind 0 }}#B388FB{{ end }}',
+]
+
+[blocks.segments.properties]
+branch_icon = "  "
+branch_max_length = 0
+cache_duration = 'none'
+display_status = true
+fetch_stash_count = true
+fetch_status = true
+fetch_upstream_icon = true
+
+[blocks.segments.properties.untracked_modes]
+'/Users/user/Projects/oh-my-posh/' = 'no'
+
+[[blocks]]
+type = "prompt"
+alignment = "right"
+
+[[blocks.segments]]
+leading_diamond = ""
+trailing_diamond = " "
+template = "  Node {{ if .PackageManagerIcon }}{{ .PackageManagerIcon }} {{ end }}{{ .Full }} "
+foreground = 'p:black'
+background = 'p:green'
+type = 'node'
+style = 'diamond'
+
+[blocks.segments.properties]
+cache_duration = 'none'
+fetch_version = true
+
+[[blocks.segments]]
+leading_diamond = ""
+trailing_diamond = " "
+template = "  {{ if .Error }}{{ .Error }}{{ else }}{{ if .Venv }}{{ .Venv }} {{ end }}{{ .Full }}{{ end }}"
+foreground = 'p:black'
+background = 'p:green'
+type = 'python'
+style = 'diamond'
+
+[blocks.segments.properties]
+cache_duration = 'none'
+
+[[blocks.segments]]
+leading_diamond = ""
+trailing_diamond = " "
+template = " \U0001F319 {{ if .Error }}{{ .Error }}{{ else }}{{ .Major }}{{ end }} "
+foreground = 'white'
+background = 'p:cyan'
+type = 'lua'
+style = 'diamond'
+
+[blocks.segments.properties]
+cache_duration = 'none'
+
+[[blocks.segments]]
+leading_diamond = ""
+trailing_diamond = " "
+type = "rust"
+style = "diamond"
+foreground = "#193549"
+background = "#99908a"
+template = "  Rust {{ .Full }} "
+
+[[blocks.segments]]
+leading_diamond = ""
+trailing_diamond = " "
+type = "go"
+style = "diamond"
+foreground = "#193549"
+background = "#B8E1FF"
+template = "  {{ if .Error }}{{ .Error }}{{ else }}{{ .Full }}{{ end }} "
+
+[[blocks.segments]]
+leading_diamond = ""
+trailing_diamond = ""
+template = '{{ .Context }} {{ if .Env.KONSOLE_VERSION }} {{ end }}'
+foreground = 'white'
+background = 'p:cyan'
+type = 'docker'
+style = 'diamond'
+
+[[blocks.segments]]
+leading_diamond = ""
+trailing_diamond = ""
+template = "{{ .CurrentDate | date .Format }} {{ if .Env.KONSOLE_VERSION }} {{ end }}"
+foreground = 'p:black'
+background = 'p:yellow'
+type = 'time'
+style = 'diamond'
+
+[blocks.segments.properties]
+cache_duration = 'none'
+time_format = '15:04:05'
+
+[[blocks]]
+type = "prompt"
+alignment = "right"
+overflow = "hidden"
+
+[[blocks.segments]]
+template = "{{ .FormattedMs }}"
+foreground = 'p:yellow'
+background = 'transparent'
+type = 'executiontime'
+style = 'plain'
+
+[blocks.segments.properties]
+cache_duration = 'none'
+threshold = 2000
+
+[[blocks]]
+type = 'prompt'
+alignment = 'left'
+newline = true
+
+[[blocks.segments]]
+template = '❯ '
+background = 'transparent'
+type = 'text'
+style = 'plain'
+foreground_templates = [
+  '{{if gt .Code 0}}red{{end}}',
+  '{{if eq .Code 0}}magenta{{end}}',
+]
+
+[blocks.segments.properties]
+cache_duration = 'none'
+
+[secondary_prompt]
+template = '❯❯ '
+foreground = 'magenta'
+background = 'transparent'
+
+[transient_prompt]
+template = '❯ '
+background = 'transparent'
+foreground_templates = [
+  '{{if gt .Code 0}}red{{end}}',
+  '{{if eq .Code 0}}magenta{{end}}',
+]
