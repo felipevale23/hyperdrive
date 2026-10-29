@@ -28,7 +28,8 @@
   `asdf-vm` for per-project versions, neovim + LunarVim (`lvim`)
 - **TeX** (opt-in, `HYPERDRIVE_TEX=1`) — TeX Live (XeLaTeX + biblatex/biber +
   latexmk), zathura, and [`texflow`](https://github.com/felipevale23/texflow)
-- **Apps** — Dolphin (default file manager, `Super+E`; nautilus kept as fallback),
+- **Apps** — Dolphin (default file manager, `Super+E`; nautilus removed; terminal panel
+  starts hidden — toolbar button / `F4` — via a locked `[State][$i]` in `dolphinstaterc`),
   Konsole, kcalc, KDE Connect (autostarts via `custom/execs.lua`)
 - **Window title bars** — `hyprbars` (AUR `hyprland-plugin-hyprbars`) with
   minimize / maximize / close; maximized windows drop theirs (`custom/rules.lua`)

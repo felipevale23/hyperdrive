@@ -29,7 +29,7 @@ depends=(
     zsh zoxide eza bat fzf fd ripgrep jq bottom btop neovim unzip wget
     # dev toolchain (asdf-vm manages project-local versions on top of these)
     nodejs npm yarn python-pip python-pipx rustup
-    # desktop utils + file manager (Dolphin replaces nautilus as the default)
+    # desktop utils + file manager (Dolphin; postinstall removes end-4's nautilus)
     dolphin dolphin-plugins ark kio-extras kdegraphics-thumbnailers
     konsole kcalc kdeconnect sshfs xdg-utils
     # ~/.local/bin/appmenu (global app menu in the top bar)

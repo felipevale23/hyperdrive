@@ -125,7 +125,7 @@ sudo pacman -S --needed --noconfirm \
     kdeconnect sshfs \
     python-gobject   # ~/.local/bin/appmenu (global app menu in the top bar)
 
-# Dolphin as the default file manager (end-4 ships nautilus — kept as fallback)
+# Dolphin as the default file manager (end-4's nautilus is removed after its installer)
 xdg-mime default org.kde.dolphin.desktop inode/directory || true
 
 # ---------------------------------------------------------------------------
@@ -219,6 +219,12 @@ if [[ -f "$KMYC_CONF" ]]; then
         printf '\ndisable_konsole = True\n' >> "$KMYC_CONF"
     fi
 fi
+# end-4 pulls in nautilus; Dolphin is the file manager (and the KDE portal does
+# the file chooser), so drop it along with the GNOME deps nothing else needs
+if pacman -Qq nautilus >/dev/null 2>&1; then
+    sudo pacman -Rns --noconfirm nautilus || true
+fi
+xdg-mime default org.kde.dolphin.desktop inode/directory || true
 
 # ---------------------------------------------------------------------------
 msg "dotfiles + system config"
