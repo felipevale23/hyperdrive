@@ -13,8 +13,7 @@ hl.on("window.open", function(w)
         return
     end
     -- Deferred: dispatched straight from the event, the window isn't in the
-    -- layout yet and the maximize is lost (or lands on another window).
-    hl.exec_cmd(string.format(
-        [[sh -c "sleep 0.1; hyprctl dispatch 'hl.dsp.window.fullscreen({ mode = \"maximized\", action = \"set\", window = \"address:%s\" })'"]],
-        w.address))
+    -- layout yet and the maximize is lost (or lands on another window). The
+    -- script re-checks the window count then, since the one seen here can be stale.
+    hl.exec_cmd(os.getenv("HOME") .. "/.config/hypr/custom/scripts/maximize-if-alone.sh " .. w.address)
 end)
