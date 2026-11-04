@@ -1,6 +1,33 @@
 --- a/modules/ii/bar/BarContent.qml
 +++ b/modules/ii/bar/BarContent.qml
-@@ -139,7 +139,10 @@
+@@ -111,10 +111,24 @@
+                 Layout.leftMargin: 8 + (leftSidebarButton.visible ? 0 : Appearance.rounding.screenRounding)
+                 Layout.rightMargin: appMenu.visible ? 8 : Appearance.rounding.screenRounding
+                 Layout.fillWidth: !appMenu.visible
+-                Layout.maximumWidth: appMenu.visible ? 220 : Number.POSITIVE_INFINITY
++                Layout.maximumWidth: appMenu.visible ? menuTitleWidth : Number.POSITIVE_INFINITY
+                 // Fixed width while menus show, so they don't slide when the title
+                 // changes (follow_mouse focusing another window on the way up)
+-                Layout.minimumWidth: appMenu.visible ? 220 : 0
++                Layout.minimumWidth: appMenu.visible ? menuTitleWidth : 0
++                // Set only when the menus' window changes, for the same reason
++                property real menuTitleWidth: 220
++                function fitToTitle() {
++                    menuTitleWidth = Math.min(220, Math.max(activeWindow.implicitWidth, windowControls.implicitWidth));
++                }
++                Connections {
++                    target: appMenu
++                    function onMenuAddressChanged() {
++                        titleArea.fitToTitle();
++                    }
++                    function onVisibleChanged() {
++                        if (appMenu.visible) titleArea.fitToTitle();
++                    }
++                }
+                 Layout.fillHeight: true
+                 implicitWidth: showControls ? windowControls.implicitWidth : activeWindow.implicitWidth
+                 Behavior on implicitWidth {
+@@ -139,7 +153,10 @@
                  WindowControls {
                      id: windowControls
                      anchors.verticalCenter: parent.verticalCenter
