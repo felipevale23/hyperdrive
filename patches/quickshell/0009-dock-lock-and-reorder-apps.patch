@@ -1,0 +1,373 @@
+--- a/modules/common/widgets/RippleButton.qml
++++ b/modules/common/widgets/RippleButton.qml
+@@ -20,6 +20,8 @@
+     property bool rippleEnabled: true
+     property var downAction // When left clicking (down)
+     property var releaseAction // When left clicking (release)
++    property var moveAction // When moving the pointer with a button held
++    property var cancelAction // When the press is taken away before release
+     property var altAction // When right clicking
+     property var middleClickAction // When middle clicking
+ 
+@@ -71,11 +73,14 @@
+                 return;
+             }
+             root.down = true
+-            if (root.downAction) root.downAction();
++            if (root.downAction) root.downAction(event);
+             if (!root.rippleEnabled) return;
+             const {x,y} = event
+             startRipple(x, y)
+         }
++        onPositionChanged: (event) => {
++            if (root.moveAction) root.moveAction(event);
++        }
+         onReleased: (event) => {
+             root.down = false
+             if (event.button != Qt.LeftButton) return;
+@@ -86,6 +91,7 @@
+         }
+         onCanceled: (event) => {
+             root.down = false
++            if (root.cancelAction) root.cancelAction();
+             if (!root.rippleEnabled) return;
+             rippleFadeAnim.restart();
+         }
+--- a/modules/ii/dock/DockAppButton.qml
++++ b/modules/ii/dock/DockAppButton.qml
+@@ -17,10 +17,57 @@
+     property real countDotHeight: 4
+     property bool appIsActive: appToplevel.toplevels.find(t => (t.activated == true)) !== undefined
+ 
++    property int modelIndex: -1
++    property real dragThreshold: 8
++    property real dragPressSceneX: 0
++    property bool dragSuppressClick: false
++    readonly property bool isPinnedApp: !isSeparator && TaskbarApps.isPinned(appToplevel.appId)
++    readonly property bool beingDragged: appListRoot.dragAppId !== "" && appListRoot.dragAppId === appToplevel.appId
++
+     readonly property bool isSeparator: appToplevel.appId === "SEPARATOR"
+     property var desktopEntry: DesktopEntries.heuristicLookup(appToplevel.appId)
+     enabled: !isSeparator
+     implicitWidth: isSeparator ? 1 : implicitHeight - topInset - bottomInset
++    z: beingDragged ? 10 : 0
++
++    transform: Translate {
++        x: root.appListRoot.dragShift(root.modelIndex)
++        Behavior on x {
++            enabled: root.appListRoot.shiftAnimated && !root.beingDragged
++            animation: Appearance.animation.elementMoveFast.numberAnimation.createObject(this)
++        }
++    }
++
++    // Scene coordinates, because the button itself moves during a drag
++    function sceneX(event) {
++        return root.mapToItem(null, event.x, event.y).x;
++    }
++
++    downAction: event => {
++        root.appListRoot.closeMenu();
++        root.dragPressSceneX = root.sceneX(event);
++        root.dragSuppressClick = false;
++    }
++
++    moveAction: event => {
++        if (root.isSeparator) return;
++        const offset = root.sceneX(event) - root.dragPressSceneX;
++        if (!root.beingDragged) {
++            if (Math.abs(offset) < root.dragThreshold) return;
++            root.appListRoot.beginDrag(root.appToplevel.appId, root.modelIndex, root.width, root.x, root.isPinnedApp);
++        }
++        root.appListRoot.updateDrag(offset);
++    }
++
++    releaseAction: () => {
++        if (!root.beingDragged) return;
++        root.dragSuppressClick = true;
++        root.appListRoot.endDrag(true);
++    }
++
++    cancelAction: () => {
++        if (root.beingDragged) root.appListRoot.endDrag(false);
++    }
+ 
+     Connections {
+         target: DesktopEntries
+@@ -62,6 +109,10 @@
+     }
+ 
+     onClicked: {
++        if (root.dragSuppressClick) {
++            root.dragSuppressClick = false;
++            return;
++        }
+         if (appToplevel.toplevels.length === 0) {
+             root.desktopEntry?.execute();
+             return;
+@@ -75,7 +126,7 @@
+     }
+ 
+     altAction: () => {
+-        TaskbarApps.togglePin(appToplevel.appId);
++        root.appListRoot.openMenu(root);
+     }
+ 
+     contentItem: Loader {
+--- a/modules/ii/dock/DockApps.qml
++++ b/modules/ii/dock/DockApps.qml
+@@ -6,6 +6,7 @@
+ import Quickshell
+ import Quickshell.Widgets
+ import Quickshell.Wayland
++import Quickshell.Hyprland
+ import qs.services
+ import qs.modules.common
+ import qs.modules.common.widgets
+@@ -20,7 +21,34 @@
+ 
+     property Item lastHoveredButton: null
+     property bool buttonHovered: false
+-    property bool requestDockShow: previewPopup.show
++    property bool requestDockShow: previewPopup.show || root.dragging || root.menuOpen
++
++    // Drag to reorder pinned apps
++    property string dragAppId: ""
++    property int dragFromIndex: -1
++    property int dragToIndex: -1
++    property real dragOffset: 0
++    property real dragSlot: 0
++    property real dragStartX: 0
++    property bool dragWasPinned: false
++    property bool dragWillLock: false
++    property bool shiftAnimated: true
++    readonly property bool dragging: dragAppId !== ""
++
++    // Right-click menu
++    property string menuAppId: ""
++    property real menuCenterX: 0
++    property bool menuOpen: false
++
++    function openMenu(button) {
++        root.menuAppId = button.appToplevel.appId;
++        root.menuCenterX = root.popupCenterXForButton(button);
++        root.menuOpen = true;
++    }
++
++    function closeMenu() {
++        root.menuOpen = false;
++    }
+ 
+     Layout.fillHeight: true
+     Layout.topMargin: Appearance.sizes.hyprlandGapsOut
+@@ -32,9 +60,65 @@
+         return root.QsWindow.mapFromItem(button, button.width / 2, 0).x;
+     }
+ 
++    function beginDrag(appId, index, buttonWidth, buttonX, pinned) {
++        root.closeMenu();
++        root.dragSlot = buttonWidth + listView.spacing;
++        root.dragStartX = buttonX;
++        root.dragWasPinned = pinned;
++        root.dragWillLock = false;
++        root.dragFromIndex = index;
++        root.dragToIndex = index;
++        root.dragOffset = 0;
++        root.dragAppId = appId;
++    }
++
++    function updateDrag(offset) {
++        const pinCount = TaskbarApps.uniquePins().length;
++        const x = root.dragStartX + offset;
++        root.dragOffset = offset;
++        if (root.dragWasPinned) {
++            root.dragToIndex = Math.max(0, Math.min(pinCount - 1, Math.round(x / root.dragSlot)));
++            return;
++        }
++        // Unpinned apps lock once dragged left into the pinned group. The
++        // separator is narrower than a slot, so biasing by a quarter slot keeps
++        // the "after the last pin" zone wide enough to hit.
++        const target = Math.max(0, Math.ceil((x - root.dragSlot / 4) / root.dragSlot));
++        root.dragWillLock = offset <= -root.dragSlot / 2 && target <= pinCount;
++        root.dragToIndex = root.dragWillLock ? target : root.dragFromIndex;
++    }
++
++    function endDrag(commit) {
++        const appId = root.dragAppId;
++        const fromIndex = root.dragFromIndex;
++        const toIndex = root.dragToIndex;
++        const willLock = root.dragWillLock;
++        // Icons land in their new slots at once, so don't animate them back
++        root.shiftAnimated = false;
++        root.dragAppId = "";
++        root.dragFromIndex = -1;
++        root.dragToIndex = -1;
++        root.dragOffset = 0;
++        root.dragWillLock = false;
++        if (commit && (willLock || toIndex !== fromIndex)) TaskbarApps.movePin(appId, toIndex);
++        Qt.callLater(() => {
++            root.shiftAnimated = true;
++        });
++    }
++
++    // How far the icon at this index sits from its slot during a drag
++    function dragShift(index) {
++        if (!root.dragging) return 0;
++        if (index === root.dragFromIndex) return root.dragOffset;
++        if (root.dragFromIndex < index && index <= root.dragToIndex) return -root.dragSlot;
++        if (root.dragToIndex <= index && index < root.dragFromIndex) return root.dragSlot;
++        return 0;
++    }
++
+     StyledListView {
+         id: listView
+         spacing: 2
++        interactive: false // Flicking would take the drag from the icons
+         orientation: ListView.Horizontal
+         anchors {
+             top: parent.top
+@@ -52,8 +136,10 @@
+         }
+         delegate: DockAppButton {
+             required property var modelData
++            required property int index
+             appToplevel: modelData
+             appListRoot: root
++            modelIndex: index
+ 
+             topInset: Appearance.sizes.hyprlandGapsOut + root.buttonPadding
+             bottomInset: Appearance.sizes.hyprlandGapsOut + root.buttonPadding
+@@ -61,10 +147,83 @@
+     }
+ 
+     PopupWindow {
++        id: contextMenu
++        readonly property real margin: Appearance.sizes.elevationMargin
++        readonly property bool appPinned: root.menuAppId !== "" && TaskbarApps.isPinned(root.menuAppId)
++
++        visible: root.menuOpen
++        color: "transparent"
++        implicitWidth: menuBackground.implicitWidth + margin * 2
++        implicitHeight: menuBackground.implicitHeight + margin * 2
++
++        anchor {
++            window: root.QsWindow.window
++            adjustment: PopupAdjustment.None
++            gravity: Edges.Top | Edges.Right
++            edges: Edges.Top | Edges.Left
++            rect.x: root.menuCenterX - contextMenu.implicitWidth / 2
++            rect.y: Appearance.sizes.elevationMargin
++        }
++
++        // follow_mouse can clear the grab while the pointer is inside the menu,
++        // so only a clear with the pointer outside counts as a click-away.
++        HyprlandFocusGrab {
++            id: menuGrab
++            active: root.menuOpen
++            windows: [contextMenu, root.QsWindow.window]
++            onCleared: {
++                if (menuHover.hovered) {
++                    menuGrab.active = false;
++                    Qt.callLater(() => {
++                        menuGrab.active = root.menuOpen;
++                    });
++                    return;
++                }
++                root.closeMenu();
++            }
++        }
++
++        Item {
++            anchors.fill: parent
++
++            HoverHandler {
++                id: menuHover
++            }
++
++            StyledRectangularShadow {
++                target: menuBackground
++            }
++
++            Rectangle {
++                id: menuBackground
++                readonly property real padding: 4
++                anchors.centerIn: parent
++                color: Appearance.colors.colLayer0
++                radius: Appearance.rounding.normal
++                border.width: 1
++                border.color: Appearance.colors.colLayer0Border
++                implicitWidth: lockButton.implicitWidth + padding * 2
++                implicitHeight: lockButton.implicitHeight + padding * 2
++
++                MenuButton {
++                    id: lockButton
++                    anchors.centerIn: parent
++                    buttonRadius: Appearance.rounding.small
++                    buttonText: contextMenu.appPinned ? Translation.tr("Unlock from dock") : Translation.tr("Lock to dock")
++                    onClicked: {
++                        TaskbarApps.togglePin(root.menuAppId);
++                        root.closeMenu();
++                    }
++                }
++            }
++        }
++    }
++
++    PopupWindow {
+         id: previewPopup
+         property var appTopLevel: root.lastHoveredButton?.appToplevel
+ 
+-        property bool shouldShow: (popupMouseArea.containsMouse || root.buttonHovered) && appTopLevel && appTopLevel.toplevels && appTopLevel.toplevels.length > 0
++        property bool shouldShow: !root.dragging && !root.menuOpen && (popupMouseArea.containsMouse || root.buttonHovered) && appTopLevel && appTopLevel.toplevels && appTopLevel.toplevels.length > 0
+ 
+         property bool show: false
+         property real cachedCenterX: 0
+--- a/services/TaskbarApps.qml
++++ b/services/TaskbarApps.qml
+@@ -8,18 +8,44 @@
+ Singleton {
+     id: root
+ 
++    // The dock lowercases app ids, so pins are compared case-insensitively.
++    // Duplicates are dropped so positions here match the dock's.
++    function uniquePins() {
++        const seen = new Set();
++        const pins = [];
++        for (const id of Config.options?.dock.pinnedApps ?? []) {
++            const key = id.toLowerCase();
++            if (seen.has(key)) continue;
++            seen.add(key);
++            pins.push(id);
++        }
++        return pins;
++    }
++
+     function isPinned(appId) {
+-        return Config.options.dock.pinnedApps.indexOf(appId) !== -1;
++        const key = appId.toLowerCase();
++        return root.uniquePins().some(id => id.toLowerCase() === key);
+     }
+ 
+     function togglePin(appId) {
++        const key = appId.toLowerCase();
+         if (root.isPinned(appId)) {
+-            Config.options.dock.pinnedApps = Config.options.dock.pinnedApps.filter(id => id !== appId)
++            Config.options.dock.pinnedApps = root.uniquePins().filter(id => id.toLowerCase() !== key);
+         } else {
+-            Config.options.dock.pinnedApps = Config.options.dock.pinnedApps.concat([appId])
++            Config.options.dock.pinnedApps = root.uniquePins().concat([appId]);
+         }
+     }
+ 
++    function movePin(appId, toIndex) {
++        const key = appId.toLowerCase();
++        const pins = root.uniquePins();
++        const fromIndex = pins.findIndex(id => id.toLowerCase() === key);
++        // An app that isn't pinned yet gets pinned at this position
++        const moved = fromIndex === -1 ? appId : pins.splice(fromIndex, 1)[0];
++        pins.splice(Math.max(0, Math.min(toIndex, pins.length)), 0, moved);
++        Config.options.dock.pinnedApps = pins;
++    }
++
+     property list<var> apps: {
+         var map = new Map();
+ 

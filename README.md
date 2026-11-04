@@ -49,6 +49,8 @@
   - bar window title fixed on single/non-zero-id monitors (was always "Desktop")
   - hover the window title to swap in macOS-style close / minimize / maximize
     buttons; the app menu sits beside it
+  - dock: right-click to lock or unlock an app, drag icons to reorder them or
+    to lock an open app in place
 - **Custom keybind** — Windows-style `Alt+Tab` workspace switcher (`dotfiles/.config/hypr/custom/`):
   tap = flip to previous workspace; hold Alt + tab = overview picker cycling only
   non-empty workspaces; an evdev watcher closes it on Alt release
