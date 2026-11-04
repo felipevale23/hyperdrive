@@ -16,7 +16,7 @@
   AMD/Intel; `nvidia-lts` + DRM modeset, initramfs modules, a rebuild hook and
   Wayland env vars for NVIDIA (incl. hybrid). Override with
   `HYPERDRIVE_GPU=amd|intel|nvidia|none` (space-separate for hybrids)
-- **Login** — SDDM, `sugar-dark` theme
+- **Login** — SDDM, `sugar-dark` theme, Num Lock on at boot
 - **Boot** — GRUB with the Elegant *mojave / window / left / dark* theme, btrfs `@`
   subvol layout, `linux-lts` + microcode, a pacman hook that keeps `grubx64.efi` current
 - **Shell** — zsh (ML4W loader + zinit + oh-my-posh), `spaceship.omp.toml` prompt with
@@ -51,6 +51,8 @@
     buttons; the app menu sits beside it
   - dock: right-click to lock or unlock an app, drag icons to reorder them or
     to lock an open app in place
+  - dock: KDE-style app list with search, categories and a lock button per app;
+    it replaces the dock's pin and overview buttons (overview is on `SUPER+Tab`)
   - app menu fixes: no bar crash on menu rebuild, clicks reach the right window,
     dropdowns survive `follow_mouse`; Gemini model updated to 3.6 Flash
 - **Custom keybind** — Windows-style `Alt+Tab` workspace switcher (`dotfiles/.config/hypr/custom/`):

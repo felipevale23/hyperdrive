@@ -121,7 +121,7 @@ msg "extra apps (KDE utils, Dolphin, Konsole, KDE Connect)"
 sudo pacman -S --needed --noconfirm \
     xdg-utils \
     dolphin dolphin-plugins ark kio-extras kdegraphics-thumbnailers \
-    konsole kcalc \
+    konsole kcalc isoimagewriter discover partitionmanager khelpcenter \
     kdeconnect sshfs \
     python-gobject   # ~/.local/bin/appmenu (global app menu in the top bar)
 
@@ -209,6 +209,8 @@ if [[ -f "$II_CONF" ]]; then
     jq '.dock.pinnedOnStartup = false' "$II_CONF" > "$tmp" && cat "$tmp" > "$II_CONF"
     rm -f "$tmp"
 fi
+# close lives in hyprbars and the top bar, so apps don't draw their own
+gsettings set org.gnome.desktop.wm.preferences button-layout 'appmenu:' || true
 # keep Konsole on the dotfiles' Kitty colorscheme: kde-material-you-colors
 # otherwise rewrites the profile's ColorScheme on every wallpaper change
 KMYC_CONF="$HOME/.config/kde-material-you-colors/config.conf"
@@ -232,6 +234,7 @@ msg "dotfiles + system config"
 
 sudo install -Dm644 "$SHARE/system/etc/docker/daemon.json"              /etc/docker/daemon.json
 sudo install -Dm644 "$SHARE/system/etc/sddm.conf.d/10-theme.conf"       /etc/sddm.conf.d/10-theme.conf
+sudo install -Dm644 "$SHARE/system/etc/sddm.conf.d/20-numlock.conf"     /etc/sddm.conf.d/20-numlock.conf
 sudo install -Dm644 "$SHARE/system/etc/pacman.d/hooks/95-grub-efi.hook" /etc/pacman.d/hooks/95-grub-efi.hook
 sudo install -Dm644 "$SHARE/system/etc/default/grub"                    /etc/default/grub
 

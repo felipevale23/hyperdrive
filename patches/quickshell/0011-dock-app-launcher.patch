@@ -1,0 +1,423 @@
+--- a/GlobalStates.qml
++++ b/GlobalStates.qml
+@@ -9,6 +9,7 @@
+ 
+ Singleton {
+     id: root
++    property bool appLauncherOpen: false
+     property bool barOpen: true
+     property bool crosshairOpen: false
+     property bool sidebarLeftOpen: false
+--- a/modules/ii/dock/Dock.qml
++++ b/modules/ii/dock/Dock.qml
+@@ -27,7 +27,7 @@
+             screen: modelData
+             visible: !GlobalStates.screenLocked
+ 
+-            property bool reveal: root.pinned || (Config.options?.dock.hoverToReveal && dockMouseArea.containsMouse) || dockApps.requestDockShow || (!ToplevelManager.activeToplevel?.activated)
++            property bool reveal: root.pinned || (Config.options?.dock.hoverToReveal && dockMouseArea.containsMouse) || dockApps.requestDockShow || GlobalStates.appLauncherOpen || (!ToplevelManager.activeToplevel?.activated)
+ 
+             anchors {
+                 bottom: true
+@@ -101,34 +101,10 @@
+                             spacing: 3
+                             property real padding: 5
+ 
+-                            VerticalButtonGroup {
+-                                Layout.topMargin: Appearance.sizes.hyprlandGapsOut // why does this work
+-                                GroupButton {
+-                                    // Pin button
+-                                    baseWidth: 35
+-                                    baseHeight: 35
+-                                    clickedWidth: baseWidth
+-                                    clickedHeight: baseHeight + 20
+-                                    buttonRadius: Appearance.rounding.normal
+-                                    toggled: root.pinned
+-                                    onClicked: root.pinned = !root.pinned
+-                                    contentItem: MaterialSymbol {
+-                                        text: "keep"
+-                                        horizontalAlignment: Text.AlignHCenter
+-                                        iconSize: Appearance.font.pixelSize.larger
+-                                        color: root.pinned ? Appearance.m3colors.m3onPrimary : Appearance.colors.colOnLayer0
+-                                    }
+-                                }
+-                            }
+-                            DockSeparator {}
+-                            DockApps {
+-                                id: dockApps
+-                                buttonPadding: dockRow.padding
+-                            }
+-                            DockSeparator {}
+                             DockButton {
++                                // App list
+                                 Layout.fillHeight: true
+-                                onClicked: GlobalStates.overviewOpen = !GlobalStates.overviewOpen
++                                onClicked: GlobalStates.appLauncherOpen = !GlobalStates.appLauncherOpen
+                                 topInset: Appearance.sizes.hyprlandGapsOut + dockRow.padding
+                                 bottomInset: Appearance.sizes.hyprlandGapsOut + dockRow.padding
+                                 contentItem: MaterialSymbol {
+@@ -139,6 +115,11 @@
+                                     color: Appearance.colors.colOnLayer0
+                                 }
+                             }
++                            DockSeparator {}
++                            DockApps {
++                                id: dockApps
++                                buttonPadding: dockRow.padding
++                            }
+                         }
+                     }
+                 }
+--- a/panelFamilies/IllogicalImpulseFamily.qml
++++ b/panelFamilies/IllogicalImpulseFamily.qml
+@@ -28,6 +28,7 @@
+     PanelLoader { component: Background {} }
+     PanelLoader { component: Cheatsheet {} }
+     PanelLoader { extraCondition: Config.options.dock.enable; component: Dock {} }
++    PanelLoader { extraCondition: Config.options.dock.enable; component: AppLauncher {} }
+     PanelLoader { component: Lock {} }
+     PanelLoader { component: MediaControls {} }
+     PanelLoader { component: NotificationPopup {} }
+--- /dev/null
++++ b/modules/ii/dock/AppLauncher.qml
+@@ -0,0 +1,340 @@
++pragma ComponentBehavior: Bound
++import qs
++import qs.services
++import qs.modules.common
++import qs.modules.common.widgets
++import QtQuick
++import QtQuick.Layouts
++import Quickshell
++import Quickshell.Io
++import Quickshell.Wayland
++import Quickshell.Widgets
++
++// App list opened from the dock: search on top, categories on the left, apps
++// on the right. Typing searches every category.
++Scope {
++    id: root
++
++    readonly property var categoryDefs: [
++        { id: "all", name: Translation.tr("All apps"), icon: "apps", match: [] },
++        { id: "internet", name: Translation.tr("Internet"), icon: "language", match: ["Network"] },
++        { id: "multimedia", name: Translation.tr("Multimedia"), icon: "play_circle", match: ["AudioVideo", "Audio", "Video"] },
++        { id: "graphics", name: Translation.tr("Graphics"), icon: "palette", match: ["Graphics"] },
++        { id: "office", name: Translation.tr("Office"), icon: "description", match: ["Office"] },
++        { id: "development", name: Translation.tr("Development"), icon: "code", match: ["Development"] },
++        { id: "games", name: Translation.tr("Games"), icon: "sports_esports", match: ["Game"] },
++        { id: "utilities", name: Translation.tr("Utilities"), icon: "build", match: ["Utility"] },
++        { id: "system", name: Translation.tr("System"), icon: "settings", match: ["System", "Settings", "Documentation"] },
++    ]
++
++    property string query: ""
++    property string categoryId: "all"
++
++    function inCategory(entry, category) {
++        return category.match.length === 0 || (entry.categories ?? []).some(c => category.match.indexOf(c) !== -1);
++    }
++
++    readonly property var sortedApps: AppSearch.list.slice().sort((a, b) => a.name.localeCompare(b.name))
++    readonly property var categories: categoryDefs.filter(category => sortedApps.some(entry => root.inCategory(entry, category)))
++    readonly property var shownApps: {
++        if (root.query !== "")
++            return AppSearch.fuzzyQuery(root.query);
++        const category = root.categoryDefs.find(c => c.id === root.categoryId);
++        return root.sortedApps.filter(entry => root.inCategory(entry, category));
++    }
++
++    // The dock groups by window class, so lock under that name when the app
++    // declares one; otherwise the locked icon and its window would be separate.
++    function dockId(entry) {
++        return entry.startupClass || entry.id;
++    }
++
++    function close() {
++        GlobalStates.appLauncherOpen = false;
++    }
++
++    function launch(entry) {
++        if (!entry)
++            return;
++        entry.execute();
++        root.close();
++    }
++
++    IpcHandler {
++        target: "appLauncher"
++
++        function toggle() {
++            GlobalStates.appLauncherOpen = !GlobalStates.appLauncherOpen;
++        }
++    }
++
++    PanelWindow {
++        id: panel
++        visible: GlobalStates.appLauncherOpen && !GlobalStates.screenLocked
++        color: "transparent"
++        exclusionMode: ExclusionMode.Ignore
++        WlrLayershell.namespace: "quickshell:appLauncher"
++        WlrLayershell.layer: WlrLayer.Overlay
++        WlrLayershell.keyboardFocus: GlobalStates.appLauncherOpen ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
++
++        anchors {
++            top: true
++            bottom: true
++            left: true
++            right: true
++        }
++
++        onVisibleChanged: {
++            if (!panel.visible)
++                return;
++            root.query = "";
++            root.categoryId = "all";
++            searchInput.text = "";
++            appList.currentIndex = 0;
++            appList.positionViewAtBeginning();
++            searchInput.forceActiveFocus();
++        }
++
++        MouseArea { // Click away to close
++            anchors.fill: parent
++            acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
++            onPressed: root.close()
++        }
++
++        StyledRectangularShadow {
++            target: card
++        }
++
++        Rectangle {
++            id: card
++            anchors {
++                horizontalCenter: parent.horizontalCenter
++                bottom: parent.bottom
++                bottomMargin: (Config.options?.dock.height ?? 60) + Appearance.sizes.elevationMargin + Appearance.sizes.hyprlandGapsOut + 8
++            }
++            width: 680
++            height: Math.min(600, panel.height - 140)
++            color: Appearance.colors.colLayer0
++            border.width: 1
++            border.color: Appearance.colors.colLayer0Border
++            radius: Appearance.rounding.large
++
++            MouseArea { // Clicks on the card shouldn't close it
++                anchors.fill: parent
++                acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
++            }
++
++            ColumnLayout {
++                anchors {
++                    fill: parent
++                    margins: 12
++                }
++                spacing: 10
++
++                Rectangle { // Search box
++                    Layout.fillWidth: true
++                    implicitHeight: 44
++                    radius: Appearance.rounding.normal
++                    color: Appearance.colors.colLayer1
++
++                    RowLayout {
++                        anchors {
++                            fill: parent
++                            leftMargin: 12
++                            rightMargin: 12
++                        }
++                        spacing: 10
++
++                        MaterialSymbol {
++                            text: "search"
++                            iconSize: Appearance.font.pixelSize.huge
++                            color: Appearance.colors.colSubtext
++                        }
++
++                        Item {
++                            Layout.fillWidth: true
++                            Layout.fillHeight: true
++
++                            StyledTextInput {
++                                id: searchInput
++                                anchors {
++                                    left: parent.left
++                                    right: parent.right
++                                    verticalCenter: parent.verticalCenter
++                                }
++                                font.pixelSize: Appearance.font.pixelSize.normal
++                                clip: true
++                                onTextChanged: {
++                                    root.query = text;
++                                    appList.currentIndex = 0;
++                                }
++                                Keys.onPressed: event => {
++                                    if (event.key === Qt.Key_Escape) {
++                                        root.close();
++                                    } else if (event.key === Qt.Key_Down) {
++                                        appList.moveCurrent(1);
++                                    } else if (event.key === Qt.Key_Up) {
++                                        appList.moveCurrent(-1);
++                                    } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
++                                        root.launch(root.shownApps[appList.currentIndex]);
++                                    } else {
++                                        return;
++                                    }
++                                    event.accepted = true;
++                                }
++                            }
++
++                            StyledText {
++                                anchors.verticalCenter: parent.verticalCenter
++                                visible: searchInput.text === ""
++                                text: Translation.tr("Search apps")
++                                font.pixelSize: Appearance.font.pixelSize.normal
++                                color: Appearance.colors.colSubtext
++                            }
++                        }
++                    }
++                }
++
++                RowLayout {
++                    Layout.fillWidth: true
++                    Layout.fillHeight: true
++                    spacing: 10
++
++                    ColumnLayout { // Categories
++                        // Its buttons fill width, which would otherwise make it
++                        // fill the row and squeeze out the app list
++                        Layout.fillWidth: false
++                        Layout.minimumWidth: 180
++                        Layout.maximumWidth: 180
++                        Layout.fillHeight: true
++                        Layout.alignment: Qt.AlignTop
++                        spacing: 2
++
++                        Repeater {
++                            model: root.categories
++
++                            RippleButton {
++                                id: categoryButton
++                                required property var modelData
++                                readonly property bool selected: root.query === "" && root.categoryId === modelData.id
++                                Layout.fillWidth: true
++                                implicitHeight: 40
++                                buttonRadius: Appearance.rounding.small
++                                toggled: selected
++                                onClicked: {
++                                    searchInput.text = "";
++                                    root.categoryId = modelData.id;
++                                    appList.currentIndex = 0;
++                                    appList.positionViewAtBeginning();
++                                    searchInput.forceActiveFocus();
++                                }
++                                contentItem: RowLayout {
++                                    spacing: 10
++                                    MaterialSymbol {
++                                        Layout.leftMargin: 6
++                                        text: categoryButton.modelData.icon
++                                        iconSize: Appearance.font.pixelSize.larger
++                                        color: categoryButton.selected ? Appearance.m3colors.m3onPrimary : Appearance.colors.colOnLayer1
++                                    }
++                                    StyledText {
++                                        Layout.fillWidth: true
++                                        text: categoryButton.modelData.name
++                                        elide: Text.ElideRight
++                                        color: categoryButton.selected ? Appearance.m3colors.m3onPrimary : Appearance.colors.colOnLayer1
++                                    }
++                                }
++                            }
++                        }
++
++                        Item {
++                            Layout.fillHeight: true
++                        }
++                    }
++
++                    StyledListView {
++                        id: appList
++                        Layout.fillWidth: true
++                        Layout.fillHeight: true
++                        clip: true
++                        spacing: 2
++                        animateAppearance: false
++                        highlightMoveDuration: 0
++                        model: root.shownApps
++
++                        function moveCurrent(step) {
++                            const next = Math.max(0, Math.min(appList.count - 1, appList.currentIndex + step));
++                            appList.currentIndex = next;
++                            appList.positionViewAtIndex(next, ListView.Contain);
++                        }
++
++                        delegate: RippleButton {
++                            id: appRow
++                            required property var modelData
++                            required property int index
++                            readonly property string dockId: root.dockId(modelData)
++                            readonly property bool locked: TaskbarApps.isPinned(dockId)
++                            width: ListView.view.width
++                            implicitHeight: 50
++                            buttonRadius: Appearance.rounding.small
++                            colBackground: index === appList.currentIndex ? Appearance.colors.colLayer1Hover : "transparent"
++                            onHoveredChanged: {
++                                if (hovered)
++                                    appList.currentIndex = index;
++                            }
++                            onClicked: root.launch(modelData)
++
++                            contentItem: RowLayout {
++                                spacing: 10
++
++                                IconImage {
++                                    Layout.leftMargin: 6
++                                    implicitSize: 32
++                                    source: Quickshell.iconPath(appRow.modelData.icon, "application-x-executable")
++                                }
++
++                                ColumnLayout {
++                                    Layout.fillWidth: true
++                                    spacing: 0
++                                    StyledText {
++                                        Layout.fillWidth: true
++                                        text: appRow.modelData.name
++                                        elide: Text.ElideRight
++                                        color: Appearance.colors.colOnLayer1
++                                    }
++                                    StyledText {
++                                        Layout.fillWidth: true
++                                        visible: text !== ""
++                                        text: appRow.modelData.genericName || appRow.modelData.comment || ""
++                                        elide: Text.ElideRight
++                                        font.pixelSize: Appearance.font.pixelSize.smaller
++                                        color: Appearance.colors.colSubtext
++                                    }
++                                }
++
++                                RippleButton {
++                                    id: lockButton
++                                    Layout.rightMargin: 4
++                                    implicitWidth: 34
++                                    implicitHeight: 34
++                                    buttonRadius: Appearance.rounding.full
++                                    onClicked: TaskbarApps.togglePin(appRow.dockId)
++                                    contentItem: MaterialSymbol {
++                                        anchors.centerIn: parent
++                                        horizontalAlignment: Text.AlignHCenter
++                                        text: appRow.locked ? "lock" : "lock_open"
++                                        fill: appRow.locked ? 1 : 0
++                                        iconSize: Appearance.font.pixelSize.larger
++                                        color: appRow.locked ? Appearance.colors.colPrimary : Appearance.colors.colSubtext
++                                    }
++                                    StyledToolTip {
++                                        text: appRow.locked ? Translation.tr("Unlock from dock") : Translation.tr("Lock to dock")
++                                    }
++                                }
++                            }
++                        }
++                    }
++                }
++            }
++        }
++    }
++}
