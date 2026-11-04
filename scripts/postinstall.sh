@@ -211,6 +211,11 @@ if [[ -f "$II_CONF" ]]; then
 fi
 # close lives in hyprbars and the top bar, so apps don't draw their own
 gsettings set org.gnome.desktop.wm.preferences button-layout 'appmenu:' || true
+# Antigravity's title bar is hardcoded; skipped if it isn't installed yet
+"$HOME/.local/bin/antigravity-fix-titlebar" || true
+# Steam's buttons and menu row; skipped if it hasn't run yet. Its menus are in
+# the top bar through appmenu.
+"$HOME/.local/bin/steam-hide-window-buttons" || true
 # keep Konsole on the dotfiles' Kitty colorscheme: kde-material-you-colors
 # otherwise rewrites the profile's ColorScheme on every wallpaper change
 KMYC_CONF="$HOME/.config/kde-material-you-colors/config.conf"

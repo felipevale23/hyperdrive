@@ -1,0 +1,39 @@
+--- a/modules/ii/bar/BarContent.qml
++++ b/modules/ii/bar/BarContent.qml
+@@ -139,7 +139,10 @@
+                 WindowControls {
+                     id: windowControls
+                     anchors.verticalCenter: parent.verticalCenter
+-                    anchors.left: parent.left
++                    // Beside the menus when they show, since the title area keeps its
++                    // full width then
++                    anchors.left: appMenu.visible ? undefined : parent.left
++                    anchors.right: appMenu.visible ? parent.right : undefined
+                     opacity: titleArea.showControls ? 1 : 0
+                     visible: opacity > 0
+                     Behavior on opacity {
+--- a/modules/ii/bar/WindowControls.qml
++++ b/modules/ii/bar/WindowControls.qml
+@@ -68,19 +68,19 @@
+ 
+         TrafficLight {
+             showGlyph: true
+-            lightColor: "#FF5555"
++            lightColor: "#FF5F57"
+             glyph: "close"
+             onClicked: root.dispatch(`hl.dsp.window.close({ ${root.target} })`)
+         }
+         TrafficLight {
+             showGlyph: true
+-            lightColor: "#F1FA8C"
++            lightColor: "#FEBC2E"
+             glyph: "remove"
+             onClicked: root.dispatch(`hl.dsp.window.move({ workspace = "special:special", follow = false, ${root.target} })`)
+         }
+         TrafficLight {
+             showGlyph: true
+-            lightColor: "#50FA7B"
++            lightColor: "#28C840"
+             glyph: root.maximized ? "close_fullscreen" : "open_in_full"
+             onClicked: root.dispatch(`hl.dsp.window.fullscreen({ mode = "maximized", action = "toggle", ${root.target} })`)
+         }

@@ -8,11 +8,13 @@ com.canonical.AppMenu.Registrar service exists. This script provides that
 registrar and lets the Quickshell bar find a window's menu by its PID.
 
   appmenu registrar              own the registrar name (run once, at login)
-  appmenu top <pid>              JSON: {service, path, items[]} top-level menus
+  appmenu top <pid> [title]      JSON: {service, path, items[]} top-level menus
   appmenu open <svc> <path> <id> JSON: children of menu item <id>
   appmenu click <svc> <path> <id>
 """
 import json
+import os
+import subprocess
 import sys
 
 from gi.repository import Gio, GLib
@@ -26,7 +28,10 @@ REGISTRAR_XML = """<node><interface name="com.canonical.AppMenu.Registrar">
 <method name="UnregisterWindow"><arg type="u" direction="in"/></method>
 <method name="GetMenuForWindow"><arg type="u" direction="in"/>
   <arg type="s" direction="out"/><arg type="o" direction="out"/></method>
+<method name="ListMenus"><arg type="a(uso)" direction="out"/></method>
 </interface></node>"""
+REGISTRAR = "com.canonical.AppMenu.Registrar"
+REGISTRAR_PATH = "/com/canonical/AppMenu/Registrar"
 
 
 def bus():
@@ -42,17 +47,38 @@ def call(conn, service, path, iface, method, args=None, reply=None):
 def run_registrar():
     node = Gio.DBusNodeInfo.new_for_xml(REGISTRAR_XML)
 
-    # Wayland windows have no X11 id, so registrations are meaningless; we
-    # only need the name to exist so Qt decides a global menu is available.
+    # Qt on Wayland never registers (no X11 id); it only needs the name to
+    # exist. XWayland clients (Electron/VSCode) do call RegisterWindow with
+    # their dbusmenu path, so remember those: xid -> (sender, path).
+    menus = {}
+
     def on_call(conn, sender, path, iface, method, params, inv):
-        if method == "GetMenuForWindow":
-            inv.return_value(GLib.Variant("(so)", ("", "/")))
+        if method == "RegisterWindow":
+            xid, obj = params.unpack()
+            menus[xid] = (sender, obj)
+            inv.return_value(None)
+        elif method == "UnregisterWindow":
+            menus.pop(params.unpack()[0], None)
+            inv.return_value(None)
+        elif method == "GetMenuForWindow":
+            inv.return_value(GLib.Variant("(so)", menus.get(params.unpack()[0], ("", "/"))))
+        elif method == "ListMenus":
+            inv.return_value(GLib.Variant("(a(uso))", (
+                [(x, s, p) for x, (s, p) in menus.items()],)))
         else:
             inv.return_value(None)
 
+    def on_name_lost_by_client(conn, sender, path, iface, signal, params):
+        name, old, new = params.unpack()
+        if not new:
+            for xid in [x for x, (s, _) in menus.items() if s == name]:
+                del menus[xid]
+
     def on_acquired(conn, name):
-        conn.register_object("/com/canonical/AppMenu/Registrar",
-                             node.interfaces[0], on_call, None, None)
+        conn.register_object(REGISTRAR_PATH, node.interfaces[0], on_call, None, None)
+        conn.signal_subscribe("org.freedesktop.DBus", "org.freedesktop.DBus",
+                              "NameOwnerChanged", "/org/freedesktop/DBus", None,
+                              Gio.DBusSignalFlags.NONE, on_name_lost_by_client)
 
     def on_lost(conn, name):
         sys.exit("appmenu: registrar name already taken")
@@ -73,7 +99,56 @@ def menubar_paths(conn, service):
                   key=lambda p: int(p.rsplit("/", 1)[1]) if p.rsplit("/", 1)[1].isdigit() else 0)
 
 
-def find_menu(conn, pid):
+def owner_pid(conn, name):
+    try:
+        return call(conn, "org.freedesktop.DBus", "/org/freedesktop/DBus",
+                    "org.freedesktop.DBus", "GetConnectionUnixProcessID",
+                    GLib.Variant("(s)", (name,)), "(u)").unpack()[0]
+    except GLib.Error:
+        return None
+
+
+def x11_title(xid):
+    import subprocess
+    try:
+        out = subprocess.run(["xprop", "-id", str(xid), "_NET_WM_NAME"],
+                             capture_output=True, text=True, timeout=1).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    # _NET_WM_NAME(UTF8_STRING) = "title"
+    if " = " not in out:
+        return None
+    return json.loads(out.split(" = ", 1)[1].strip())
+
+
+def registered_menu(conn, pid, title=None):
+    """Menus registered by X11 id (XWayland Electron apps such as VSCode).
+    Each window of the app registers its own menu, and a click is run in the
+    window that owns the menu, so pick the one whose X11 title matches the
+    focused window; otherwise the most recently created window."""
+    try:
+        menus = call(conn, REGISTRAR, REGISTRAR_PATH, REGISTRAR, "ListMenus",
+                     reply="(a(uso))").unpack()[0]
+    except GLib.Error:
+        return None, None
+    mine = [(x, s, p) for x, s, p in sorted(menus, reverse=True)
+            if owner_pid(conn, s) == pid]
+    if title:
+        for xid, sender, path in mine:
+            try:
+                if x11_title(xid) == title:
+                    return sender, path
+            except ValueError:
+                pass
+    if mine:
+        return mine[0][1], mine[0][2]
+    return None, None
+
+
+def find_menu(conn, pid, title=None):
+    service, path = registered_menu(conn, pid, title)
+    if service:
+        return service, path
     names = call(conn, "org.freedesktop.DBus", "/org/freedesktop/DBus",
                  "org.freedesktop.DBus", "ListNames", reply="(as)").unpack()[0]
     for name in names:
@@ -148,6 +223,153 @@ def about_to_show(conn, service, path, item_id):
         pass
 
 
+def cache_file(service, path):
+    import os
+    key = (service + path).replace("/", "_").replace(":", "")
+    return os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), f"appmenu-{key}.json")
+
+
+# Electron (libdbusmenu) renumbers every item whenever VSCode rebuilds its menu
+# (on each window focus change, including the refocus right before a click),
+# so ids the bar holds go stale. We remember each id's label path from the
+# root (["File", "Open Folder..."]) and walk the current menu by labels when
+# an id is rejected. Ids only grow, so a stale id never hits another item.
+
+def load_paths(service, path):
+    try:
+        with open(cache_file(service, path)) as f:
+            known = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    # Older cache format stored a bare top-level label
+    return {k: ([v] if isinstance(v, str) else v) for k, v in known.items()}
+
+
+def remember_paths(service, path, parent_labels, items):
+    known = load_paths(service, path)
+    for i in items:
+        if i["label"] and not i["separator"]:
+            known[str(i["id"])] = parent_labels + [i["label"]]
+    if len(known) > 4000:
+        known = dict(sorted(known.items(), key=lambda kv: int(kv[0]))[-2000:])
+    try:
+        with open(cache_file(service, path), "w") as f:
+            json.dump(known, f)
+    except OSError:
+        pass
+
+
+def remember_top(service, path, items):
+    remember_paths(service, path, [], items)
+
+
+def resolve_path(conn, service, path, labels):
+    """Current id of the item reached by following `labels` from the root."""
+    if not labels:
+        return None
+    parent = 0
+    for label in labels:
+        kids = children(conn, service, path, parent)
+        parent = next((k["id"] for k in kids if k["label"] == label), None)
+        if parent is None:
+            return None
+    return parent
+
+
+def children(conn, service, path, item_id):
+    about_to_show(conn, service, path, item_id)
+    return [item_json(c) for c in layout(conn, service, path, item_id, 1)[2]]
+
+
+def debug_log(msg):
+    import os, subprocess, time
+    try:
+        active = subprocess.run(["xprop", "-root", "_NET_ACTIVE_WINDOW"],
+                                capture_output=True, text=True, timeout=1).stdout.strip()
+        with open(os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "appmenu.log"), "a") as f:
+            f.write(f"{time.strftime('%H:%M:%S')} {msg} | x11 {active.rsplit(' ', 1)[-1]}\n")
+    except Exception:
+        pass
+
+
+# Steam exports no menu and its own is web-only, so offer the same menus here,
+# running steam:// commands. None marks a separator.
+STEAM_SERVICE = "steam-menu"
+STEAM_MENUS = [
+    ("Steam", [
+        ("Settings", "steam://open/settings"),
+        ("Check for Updates", "steam://checkforupdates"),
+        ("Go Online", "steam://open/goonline"),
+        None,
+        ("System Information", "steam://open/systeminfo"),
+        ("About Steam", "steam://open/about"),
+        None,
+        ("Exit Steam", "steam://exit"),
+    ]),
+    ("View", [
+        ("Library", "steam://open/games"),
+        ("Hidden Games", "steam://open/library/collection/hidden"),
+        ("Downloads", "steam://open/downloads"),
+        ("Screenshots", "steam://open/screenshots"),
+        ("Inventory", "steam://open/inventory"),
+        ("Game Servers", "steam://open/servers"),
+        None,
+        ("Big Picture", "steam://open/bigpicture"),
+    ]),
+    ("Friends", [
+        ("Friends List", "steam://open/friends"),
+        ("Add a Friend", "steam://friends/add"),
+        None,
+        ("Online", "steam://friends/status/online"),
+        ("Away", "steam://friends/status/away"),
+        ("Invisible", "steam://friends/status/invisible"),
+        ("Offline", "steam://friends/status/offline"),
+    ]),
+    ("Games", [
+        ("Library", "steam://open/games"),
+        ("Add a Non-Steam Game", "steam://open/addnonsteamgame"),
+        ("Redeem a Wallet Code", "steam://url/RedeemWalletVoucher"),
+        ("Manage Gifts", "steam://url/ManageGiftsPage"),
+    ]),
+    ("Help", [
+        ("Steam Support", "steam://url/HelpFrontPage"),
+        ("Privacy Policy", "steam://url/PrivacyPolicy"),
+        ("Legal Information", "steam://url/LegalInformation"),
+    ]),
+]
+
+
+def is_steam(pid):
+    try:
+        # Its windows belong to steamwebhelper
+        return os.path.basename(os.readlink(f"/proc/{pid}/exe")) in ("steam", "steamwebhelper")
+    except OSError:
+        return False
+
+
+def steam_item(item_id, label, has_children=False):
+    return {"id": item_id, "label": label, "enabled": True, "visible": True,
+            "separator": label == "", "toggleType": "", "toggleState": -1,
+            "shortcut": "", "hasChildren": has_children}
+
+
+def steam_top():
+    return [steam_item(menu * 100, name, True) for menu, (name, _) in enumerate(STEAM_MENUS, 1)]
+
+
+def steam_open(item_id):
+    entries = STEAM_MENUS[item_id // 100 - 1][1]
+    return [steam_item(item_id + row, entry[0] if entry else "")
+            for row, entry in enumerate(entries, 1)]
+
+
+def steam_click(item_id):
+    url = STEAM_MENUS[item_id // 100 - 1][1][item_id % 100 - 1][1]
+    debug_log(f"click steam {url}")
+    subprocess.Popen(["/usr/bin/steam", url], stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+
+
 def main(argv):
     if len(argv) < 2:
         sys.exit(__doc__)
@@ -156,23 +378,62 @@ def main(argv):
         return run_registrar()
 
     conn = bus()
-    if cmd == "top":
-        service, path = find_menu(conn, int(argv[2]))
+    if cmd in ("top", "open"):
+        debug_log(" ".join(argv[1:]))
+    if cmd == "top" and is_steam(int(argv[2])):
+        print(json.dumps({"service": STEAM_SERVICE, "path": "/", "items": steam_top()}))
+    elif cmd == "open" and argv[2] == STEAM_SERVICE:
+        print(json.dumps(steam_open(int(argv[4]))))
+    elif cmd == "click" and argv[2] == STEAM_SERVICE:
+        steam_click(int(argv[4]))
+    elif cmd == "top":
+        service, path = find_menu(conn, int(argv[2]), argv[3] if len(argv) > 3 else None)
         items = []
         if service:
             about_to_show(conn, service, path, 0)
             items = [item_json(c) for c in layout(conn, service, path, 0, 1)[2]]
             items = [i for i in items if i["visible"] and i["label"]]
+            remember_top(service, path, items)
         print(json.dumps({"service": service or "", "path": path or "", "items": items}))
     elif cmd == "open":
         service, path, item_id = argv[2], argv[3], int(argv[4])
-        about_to_show(conn, service, path, item_id)
-        items = [item_json(c) for c in layout(conn, service, path, item_id, 1)[2]]
+        labels = load_paths(service, path).get(str(item_id))
+        try:
+            items = children(conn, service, path, item_id)
+        except GLib.Error:
+            items = []
+            try:
+                new_id = resolve_path(conn, service, path, labels)
+                if new_id is not None:
+                    items = children(conn, service, path, new_id)
+            except GLib.Error:
+                pass
+        if labels:
+            remember_paths(service, path, labels, items)
         print(json.dumps(tidy([i for i in items if i["visible"]])))
     elif cmd == "click":
+        import time
         service, path, item_id = argv[2], argv[3], int(argv[4])
-        call(conn, service, path, DBUSMENU, "Event",
-             GLib.Variant("(isvu)", (item_id, "clicked", GLib.Variant("i", 0), 0)))
+        labels = load_paths(service, path).get(str(item_id))
+        err, tries = "ok", 0
+        for tries in range(1, 5):
+            try:
+                call(conn, service, path, DBUSMENU, "Event",
+                     GLib.Variant("(isvu)", (item_id, "clicked", GLib.Variant("i", 0), 0)))
+                err = "ok"
+                break
+            except GLib.Error as e:
+                err = str(e).rsplit(": ", 1)[-1]
+            # The menu may be mid-rebuild; give it a moment, then re-resolve
+            time.sleep(0.1)
+            try:
+                new_id = resolve_path(conn, service, path, labels)
+            except GLib.Error:
+                new_id = None
+            if new_id is None:
+                continue
+            item_id = new_id
+        debug_log(f"click {service} {path} {labels} -> {item_id} (try {tries}): {err}")
     else:
         sys.exit(__doc__)
 

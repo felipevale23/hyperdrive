@@ -28,8 +28,8 @@ hl.config({
     }
 })
 
--- Plasma-style title bars (hyprbars plugin): title on the left,
--- minimize / maximize / close on the right. The plugin .so is loaded in
+-- macOS-style title bars (hyprbars plugin): red, yellow and green buttons on
+-- the left, title in the middle. The plugin .so is loaded in
 -- custom/execs.lua; hl.plugin.hyprbars is nil until then (Hyprland re-parses
 -- this file once the plugin loads), hence the guard.
 hl.config({
@@ -39,10 +39,12 @@ hl.config({
             bar_color               = "rgba(282A36FF)",
             bar_text_font           = "JetBrainsMono Nerd Font",
             bar_text_size           = 11,
-            bar_text_align          = "left",
+            bar_text_align          = "center",
             bar_padding             = 12,
-            bar_button_padding      = 8,
-            bar_buttons_alignment   = "right",
+            bar_button_padding      = 7,
+            bar_buttons_alignment   = "left",
+            icon_on_hover           = true,
+            inactive_button_color   = "rgba(5A5C6AFF)",
             bar_part_of_window      = true,
             bar_precedence_over_border = true,
             on_double_click         = "hyprctl dispatch 'hl.dsp.window.fullscreen({ mode = \"maximized\", action = \"toggle\" })'",
@@ -51,19 +53,19 @@ hl.config({
 })
 
 if hl.plugin and hl.plugin.hyprbars then
-    -- Buttons are laid out right-to-left: first added = rightmost.
+    -- Laid out from the left edge: first added = leftmost.
     hl.plugin.hyprbars.add_button({
-        bg_color = "rgba(FF5555FF)", fg_color = "rgba(282A36FF)", size = 16, icon = "",
+        bg_color = "rgba(FF5F57FF)", fg_color = "rgba(282A36CC)", size = 13, icon = "",
         action = "hyprctl dispatch 'hl.dsp.window.close()'",
-    })
-    hl.plugin.hyprbars.add_button({
-        bg_color = "rgba(44475AFF)", fg_color = "rgba(F8F8F2FF)", size = 16, icon = "",
-        action = "hyprctl dispatch 'hl.dsp.window.fullscreen({ mode = \"maximized\", action = \"toggle\" })'",
     })
     -- Hyprland has no real minimize: send the window to the scratchpad
     -- (SUPER+S brings it back).
     hl.plugin.hyprbars.add_button({
-        bg_color = "rgba(44475AFF)", fg_color = "rgba(F8F8F2FF)", size = 16, icon = "",
+        bg_color = "rgba(FEBC2EFF)", fg_color = "rgba(282A36CC)", size = 13, icon = "",
         action = "hyprctl dispatch 'hl.dsp.window.move({ workspace = \"special:special\", follow = false })'",
+    })
+    hl.plugin.hyprbars.add_button({
+        bg_color = "rgba(28C840FF)", fg_color = "rgba(282A36CC)", size = 13, icon = "",
+        action = "hyprctl dispatch 'hl.dsp.window.fullscreen({ mode = \"maximized\", action = \"toggle\" })'",
     })
 end

@@ -1,0 +1,4 @@
+#!/bin/sh
+# XWayland, like VS Code: on Wayland Electron draws its own window buttons and
+# in-window menu, and it only exports the menu to the top bar under X11.
+exec "$HOME/.local/lib/antigravity/antigravity" --ozone-platform=x11 "$@"

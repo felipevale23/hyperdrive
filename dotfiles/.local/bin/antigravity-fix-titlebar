@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""Give Antigravity a normal window frame, so hyprbars and the top bar own its
+buttons and menu, and hide the app's own menu row (New Conversation and Command
+Palette stay on Ctrl+N and Ctrl+Shift+P). Its title bar is hardcoded in app.asar,
+so updates undo this: re-run after each one. Edits dist/utils.js in place at the same size and keeps
+the original as app.asar.orig. Pair with --ozone-platform=x11 (~/.local/bin/antigravity)."""
+import hashlib, json, os, shutil, struct, sys
+
+ASAR = os.path.expanduser("~/.local/lib/antigravity/resources/app.asar")
+TARGET = "dist/utils.js"
+# Replacements must match the original length, so new code takes the place of
+# comments and is padded with spaces.
+DOC = (b"/**\n * Creates and returns a new BrowserWindow pointed at `url`.\n"
+       b" * Uses a hidden title bar with native traffic lights on macOS.\n"
+       b" * Node integration is disabled and context isolation is enabled for security.\n */")
+HIDE_MENU = (b"const hideMenu=w=>w.webContents.on('dom-ready',()=>w.webContents.insertCSS("
+             b"'.shrink-0:has(>[data-testid=title-menu-bar]){display:none}'));")
+NOTE = b"// Prevent the menu dropdown from being very wide due to long page titles"
+EDITS = [
+    (b"titleBarStyle: 'hidden',", b"titleBarStyle:'default',"),
+    (b"titleBarOverlay: isMacOS()", b"titleBarOverlay: true     "),
+    (DOC, HIDE_MENU.ljust(len(DOC))),
+    (NOTE, b"hideMenu(win);".ljust(len(NOTE))),
+]
+
+if not os.path.exists(ASAR):
+    sys.exit("Antigravity is not installed")
+
+data = bytearray(open(ASAR, "rb").read())
+header_size = struct.unpack("<I", data[12:16])[0]
+header = json.loads(data[16:16 + header_size])
+base = 16 + (header_size + 3) // 4 * 4
+
+entry = header
+for part in TARGET.split("/"):
+    entry = entry["files"][part]
+start = base + int(entry["offset"])
+end = start + entry["size"]
+source = bytes(data[start:end])
+
+original = source
+for old, new in EDITS:
+    if new in source:
+        continue
+    if len(old) != len(new) or source.count(old) != 1:
+        sys.exit(f"app code changed, not patching: {old[:40]!r} found {source.count(old)} times")
+    source = source.replace(old, new)
+if source == original:
+    sys.exit("already patched")
+
+integrity = entry.get("integrity")
+if integrity:
+    head = bytes(data[16:16 + header_size])
+    size = integrity["blockSize"]
+    blocks = [hashlib.sha256(source[i:i + size]).hexdigest() for i in range(0, len(source), size)]
+    pairs = [(integrity["hash"], hashlib.sha256(source).hexdigest())] + list(zip(integrity["blocks"], blocks))
+    for old_hash, new_hash in pairs:
+        head = head.replace(old_hash.encode(), new_hash.encode())
+    data[16:16 + header_size] = head
+
+data[start:end] = source
+if not os.path.exists(ASAR + ".orig"):
+    shutil.copy2(ASAR, ASAR + ".orig")
+with open(ASAR + ".new", "wb") as out:
+    out.write(data)
+shutil.copymode(ASAR, ASAR + ".new")
+os.replace(ASAR + ".new", ASAR)  # new inode, so a running Antigravity is unaffected
+print("patched; restart Antigravity")

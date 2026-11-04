@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Hide Steam's own minimize, maximize and close buttons and its menu row, so
+hyprbars and the top bar own the buttons (Settings and Exit stay in the tray). Steam has no setting for this and its class names are hashed, so
+this looks them up in steamui and rewrites one CSS rule. Steam checks file sizes
+at startup and restores anything that differs, so the edit keeps the same size.
+Steam updates undo it: re-run after one, then restart Steam. The original is
+saved in ~/.local/state/steam-hide-window-buttons/."""
+import glob, os, re, shutil, sys
+
+UI = os.path.expanduser("~/.local/share/Steam/steamui")
+BACKUP = os.path.expanduser("~/.local/state/steam-hide-window-buttons")
+if not os.path.isdir(UI):
+    sys.exit("Steam is not installed")
+
+# The class map of the main window's title bar
+PATTERN = re.compile(rb'WindowControls:"([\w-]+)",DragArea:"[\w-]+",TitleBarControls:"[\w-]+",'
+                     rb'TitleBar:"([\w-]+)",RootMenuBar:"([\w-]+)"')
+
+for script in glob.glob(f"{UI}/*.js"):
+    found = PATTERN.search(open(script, "rb").read())
+    if found:
+        break
+else:
+    sys.exit("Steam's code changed, not patching: title bar classes not found")
+
+controls, title_bar, menu = found.groups()
+rules = [re.compile(rb"\." + re.escape(title_bar) + rb" \." + re.escape(name) + rb"\{([^}]*)\}")
+         for name in (controls, menu)]
+hidden = b"display:none"
+
+for css in glob.glob(f"{UI}/css/*.css"):
+    text = open(css, "rb").read()
+    if all(rule.search(text) for rule in rules):
+        break
+else:
+    sys.exit("Steam's code changed, not patching: no stylesheet styles the title bar")
+
+bodies = [rule.search(text).group(1) for rule in rules]
+if all(body.startswith(hidden) for body in bodies):
+    sys.exit("already patched")
+if any(len(body) < len(hidden) for body in bodies):
+    sys.exit("Steam's code changed, not patching: rule too short to keep the file size")
+
+if not any(body.startswith(hidden) for body in bodies):  # an untouched original
+    os.makedirs(BACKUP, exist_ok=True)
+    shutil.copy2(css, os.path.join(BACKUP, os.path.basename(css)))
+patched = text
+for rule in rules:
+    found = rule.search(patched)
+    patched = patched[:found.start(1)] + hidden.ljust(len(found.group(1))) + patched[found.end(1):]
+with open(css + ".new", "wb") as out:
+    out.write(patched)
+shutil.copystat(css, css + ".new")  # keeps the timestamp as well
+os.replace(css + ".new", css)
+print(f"patched {os.path.basename(css)}; restart Steam")

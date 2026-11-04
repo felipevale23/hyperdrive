@@ -55,6 +55,13 @@
     it replaces the dock's pin and overview buttons (overview is on `SUPER+Tab`)
   - app menu fixes: no bar crash on menu rebuild, clicks reach the right window,
     dropdowns survive `follow_mouse`; Gemini model updated to 3.6 Flash
+- **Antigravity** — runs under XWayland with a normal window frame, so hyprbars and the
+  top bar own its buttons and menu. Its title bar is hardcoded, so `antigravity-fix-titlebar`
+  patches `app.asar`: re-run it after each Antigravity update
+- **Steam** — `steam-hide-window-buttons` hides its own buttons and menu row, and `appmenu`
+  offers its menus in the top bar. Re-run it after each Steam update, then restart Steam
+- **Window buttons** — macOS-style red, yellow and green on the left of `hyprbars` title
+  bars and in the top bar
 - **Custom keybind** — Windows-style `Alt+Tab` workspace switcher (`dotfiles/.config/hypr/custom/`):
   tap = flip to previous workspace; hold Alt + tab = overview picker cycling only
   non-empty workspaces; an evdev watcher closes it on Alt release
