@@ -1,0 +1,252 @@
+--- a/modules/common/Directories.qml
++++ b/modules/common/Directories.qml
+@@ -62,5 +62,6 @@
+         Quickshell.execDetached(["mkdir", "-p", `${aiChats}`])
+         Quickshell.execDetached(["mkdir", "-p", `${userActions}`])
+         Quickshell.execDetached(["rm", "-rf", `${tempImages}`])
++        Quickshell.execDetached(["mkdir", "-p", "/tmp/quickshell/ai"])
+     }
+ }
+--- a/modules/ii/bar/AppMenu.qml
++++ b/modules/ii/bar/AppMenu.qml
+@@ -16,8 +16,12 @@
+     id: root
+     readonly property var client: HyprlandData.windowByAddress[`0x${Hyprland.activeToplevel?.address}`]
+     readonly property int pid: client?.pid ?? 0
++    // Several windows of one process (VSCode) each own a menu, and a click
++    // runs in the window that owns it — so also refresh per window.
++    readonly property string address: Hyprland.activeToplevel?.address ?? ""
+     property string service: ""
+     property string menuPath: ""
++    property string menuAddress: ""
+     property var items: []
+     property int openIndex: -1
+ 
+@@ -25,7 +29,49 @@
+     implicitWidth: visible ? row.implicitWidth : 0
+     implicitHeight: row.implicitHeight
+ 
+-    onPidChanged: refresh()
++    // input:follow_mouse moves focus to whatever window the pointer crosses on
++    // its way to the bar (e.g. kitty under the menu titles). So while the
++    // pointer is on the menu or a dropdown is open, ignore focus changes and
++    // catch up afterwards; and when focus lands on a window without a menu,
++    // keep the last menu for a moment instead of clearing it at once.
++    onOpenIndexChanged: console.log(`[AppMenu] openIndex=${openIndex} pid=${pid} addr=${address}`)
++    readonly property bool frozen: openIndex >= 0 || menuHover.hovered
++    property bool pendingRefresh: false
++    property string queryAddress: ""
++
++    onPidChanged: windowSwitched()
++    onAddressChanged: windowSwitched()
++    onFrozenChanged: {
++        if (!root.frozen && root.pendingRefresh) {
++            root.pendingRefresh = false;
++            refresh();
++        }
++    }
++
++    function windowSwitched() {
++        console.log(`[AppMenu] window switched pid=${root.pid} frozen=${root.frozen}`);
++        if (root.frozen) {
++            root.pendingRefresh = true;
++            return;
++        }
++        refresh();
++    }
++
++    HoverHandler {
++        id: menuHover
++    }
++
++    Timer {
++        id: clearTimer
++        interval: 1500
++        onTriggered: {
++            if (root.frozen)
++                restart();
++            else
++                root.applyItems([]);
++        }
++    }
++
+     Component.onCompleted: refresh()
+ 
+     property int retries: 0
+@@ -35,14 +81,43 @@
+         query();
+     }
+ 
++    function noMenu() {
++        if (root.items.length > 0 && !clearTimer.running)
++            clearTimer.restart();
++    }
++
++    function sameLabels(a, b) {
++        if (!a || !b || a.length !== b.length)
++            return false;
++        for (let i = 0; i < a.length; i++)
++            if (a[i].label !== b[i].label)
++                return false;
++        return true;
++    }
++
++    // Replacing `items` rebuilds the Repeater and deletes the button an open
++    // popup is anchored to, which crashes Quickshell (PopupAnchor). So keep the
++    // current buttons when the titles are unchanged (stale ids are re-resolved
++    // by label in the appmenu script), and close any popup before rebuilding.
++    function applyItems(newItems) {
++        if (root.sameLabels(root.items, newItems))
++            return;
++        if (root.openIndex >= 0) {
++            root.openIndex = -1;
++            Qt.callLater(() => root.items = newItems);
++        } else {
++            root.items = newItems;
++        }
++    }
++
+     function query() {
+-        root.openIndex = -1;
+         topProc.running = false;
++        root.queryAddress = root.address;
+         if (root.pid <= 0) {
+-            root.items = [];
++            root.noMenu();
+             return;
+         }
+-        topProc.command = [`${Quickshell.env("HOME")}/.local/bin/appmenu`, "top", String(root.pid)];
++        topProc.command = [`${Quickshell.env("HOME")}/.local/bin/appmenu`, "top", String(root.pid), root.client?.title ?? ""];
+         topProc.running = true;
+     }
+ 
+@@ -56,16 +131,21 @@
+         id: topProc
+         stdout: StdioCollector {
+             onStreamFinished: {
++                let data = null;
+                 try {
+-                    const data = JSON.parse(text);
++                    data = JSON.parse(text);
++                } catch (e) {}
++                if (data && data.items.length > 0) {
++                    clearTimer.stop();
+                     root.service = data.service;
+                     root.menuPath = data.path;
+-                    root.items = data.items;
+-                } catch (e) {
+-                    root.items = [];
++                    root.menuAddress = root.queryAddress;
++                    root.applyItems(data.items);
++                } else {
++                    root.noMenu();
+                 }
+                 // A just-opened window may not have exported its menu yet
+-                if (root.items.length === 0 && root.pid > 0 && root.retries < 3) {
++                if ((data?.items?.length ?? 0) === 0 && root.pid > 0 && root.retries < 3) {
+                     root.retries++;
+                     retryTimer.restart();
+                 }
+@@ -110,6 +190,8 @@
+                         service: root.service
+                         menuPath: root.menuPath
+                         menuId: menuButton.modelData.id
++                        windowAddress: root.menuAddress
++                        titlesHovered: menuHover.hovered
+                         anchor {
+                             window: menuButton.QsWindow.window
+                             item: menuButton
+--- a/modules/ii/bar/AppMenuPopup.qml
++++ b/modules/ii/bar/AppMenuPopup.qml
+@@ -18,6 +18,10 @@
+     required property string service
+     required property string menuPath
+     required property int menuId
++    // Hyprland address (no 0x) of the window this menu belongs to
++    property string windowAddress: ""
++    // True while the pointer is on the bar's menu titles
++    property bool titlesHovered: false
+ 
+     signal dismissed
+ 
+@@ -28,20 +32,45 @@
+     implicitHeight: popupBackground.implicitHeight + root.padding * 2
+     implicitWidth: popupBackground.implicitWidth + root.padding * 2
+ 
++    // Apps run menu commands in their focused window (VSCode ignores them
++    // when unfocused), and follow_mouse may have moved focus on the way to the
++    // bar — so release our grab, refocus the menu's window, then click.
+     function activate(entry) {
+-        Quickshell.execDetached([`${Quickshell.env("HOME")}/.local/bin/appmenu`, "click", root.service, root.menuPath, String(entry.id)]);
++        console.log(`[AppMenu] activate ${entry.id} ${entry.label} addr=${root.windowAddress}`);
+         root.dismissed();
++        Quickshell.execDetached(["sh", "-c",
++            '[ -n "$1" ] && hyprctl dispatch "hl.dsp.focus({window=\\"address:0x$1\\"})" >/dev/null; sleep 0.15; exec "$2" click "$3" "$4" "$5"',
++            "appmenu-click", root.windowAddress, `${Quickshell.env("HOME")}/.local/bin/appmenu`,
++            root.service, root.menuPath, String(entry.id)]);
+     }
+ 
++    // The grab is also cleared when input:follow_mouse hands focus to a window
++    // under the dropdown (e.g. kitty) while the pointer moves inside it. Only
++    // treat it as a click-away when the pointer is really outside; otherwise
++    // re-arm the grab and stay open.
+     HyprlandFocusGrab {
++        id: grab
+         active: true
+         windows: [root, root.anchor.window]
+-        onCleared: root.dismissed()
++        onCleared: {
++            if (popupHover.hovered || root.titlesHovered) {
++                console.log("[AppMenu] focus grab cleared by focus move, keeping open");
++                grab.active = false;
++                Qt.callLater(() => grab.active = true);
++                return;
++            }
++            console.log("[AppMenu] focus grab cleared -> dismiss");
++            root.dismissed();
++        }
+     }
+ 
+     MouseArea {
+         anchors.fill: parent
+         acceptedButtons: Qt.BackButton | Qt.RightButton
++
++        HoverHandler {
++            id: popupHover
++        }
+         onPressed: event => {
+             if (stackView.depth > 1)
+                 stackView.pop();
+--- a/modules/ii/bar/BarContent.qml
++++ b/modules/ii/bar/BarContent.qml
+@@ -112,6 +112,9 @@
+                 Layout.rightMargin: appMenu.visible ? 8 : Appearance.rounding.screenRounding
+                 Layout.fillWidth: !appMenu.visible
+                 Layout.maximumWidth: appMenu.visible ? 220 : Number.POSITIVE_INFINITY
++                // Fixed width while menus show, so they don't slide when the title
++                // changes (follow_mouse focusing another window on the way up)
++                Layout.minimumWidth: appMenu.visible ? 220 : 0
+                 Layout.fillHeight: true
+                 implicitWidth: showControls ? windowControls.implicitWidth : activeWindow.implicitWidth
+                 Behavior on implicitWidth {
+--- a/services/Ai.qml
++++ b/services/Ai.qml
+@@ -255,13 +255,13 @@
+     // - api_format: The API format of the model. Can be "openai" or "gemini". Default is "openai".
+     // - extraParams: Extra parameters to be passed to the model. This is a JSON object.
+     property var models: Config.options.policies.ai === 2 ? {} : {
+-        "gemini-2.5-flash": aiModelComponent.createObject(this, {
+-            "name": "Gemini 2.5 Flash",
++        "gemini-3.6-flash": aiModelComponent.createObject(this, {
++            "name": "Gemini 3.6 Flash",
+             "icon": "google-gemini-symbolic",
+-            "description": Translation.tr("Online | Google's model\nNewer model that's slower than its predecessor but should deliver higher quality answers"),
++            "description": Translation.tr("Online | Google's model\nLatest fast model with high quality answers and tool support"),
+             "homepage": "https://aistudio.google.com",
+-            "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent",
+-            "model": "gemini-2.5-flash",
++            "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:streamGenerateContent",
++            "model": "gemini-3.6-flash",
+             "requires_key": true,
+             "key_id": "gemini",
+             "key_get_link": "https://aistudio.google.com/app/apikey",

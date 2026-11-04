@@ -51,6 +51,8 @@
     buttons; the app menu sits beside it
   - dock: right-click to lock or unlock an app, drag icons to reorder them or
     to lock an open app in place
+  - app menu fixes: no bar crash on menu rebuild, clicks reach the right window,
+    dropdowns survive `follow_mouse`; Gemini model updated to 3.6 Flash
 - **Custom keybind** — Windows-style `Alt+Tab` workspace switcher (`dotfiles/.config/hypr/custom/`):
   tap = flip to previous workspace; hold Alt + tab = overview picker cycling only
   non-empty workspaces; an evdev watcher closes it on Alt release
