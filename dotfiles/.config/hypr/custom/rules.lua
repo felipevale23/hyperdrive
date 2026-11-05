@@ -6,15 +6,6 @@ hl.window_rule({ match = { class = "^(libreoffice-.*)$" }, float = true })
 hl.window_rule({ match = { class = "^(libreoffice-.*)$" }, center = true })
 hl.window_rule({ match = { class = "^(libreoffice-.*)$" }, size = {"(monitor_w*0.72)", "(monitor_h*0.82)"} })
 
--- OpenCode panel (SUPER + A): a left-side panel on its own special workspace.
--- The class holds a one-time token, so only match its fixed start.
-local openCode = { class = "^chrome-127\\.0\\.0\\.1__.*" }
-hl.window_rule({ match = openCode, float = true })
-hl.window_rule({ match = openCode, workspace = "special:opencode silent" })
-hl.window_rule({ match = openCode, size = {"760", "(monitor_h-56)"} })
-hl.window_rule({ match = openCode, move = {8, 48} })
-hl.window_rule({ match = openCode, ["hyprbars:no_bar"] = true })
-
 -- Maximized windows lose their hyprbars title bar; hover the window title in
 -- the Quickshell top bar for its min/max/close buttons (bar/WindowControls.qml).
 hl.window_rule({ match = { fullscreen_state_internal = 1 }, ["hyprbars:no_bar"] = true })

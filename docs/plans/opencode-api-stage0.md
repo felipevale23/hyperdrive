@@ -144,10 +144,8 @@ What to show on the Allow/Deny card:
   each. `once` clears only its own request. So close cards from `permission.replied` events, not
   from the button that was pressed, and expect 404 on a second reply.
 - Models can issue parallel tool calls, so several cards can be open at once.
-- With `* * ask`, every `read` also prompts, including of ordinary files. Decided: stage 2 allows
-  project reads, using rules in this order: `* * ask`, `read * allow`, `read *.env ask`,
-  `read *.env.* ask`. Not tested yet: confirm that a read outside the project still prompts
-  through `external_directory` before relying on it.
+- With `* * ask`, every `read` also prompts, including of ordinary files. Do **not** fix that with a
+  `read * allow` rule. See "Found while building stage 2".
 - `POST /api/session/{id}/permission` evaluates a rule without a model, which makes it a good
   test tool. It creates a real pending request when the result is `ask`.
 
@@ -167,17 +165,35 @@ returned anything looser than the rule, so it is harmless, but it can confuse te
   `--help`, `--version` and `debug paths` do not start one.
 - `/api/*` and `/openapi.json` return 401 without auth. `/session` returns the web app's HTML.
 
+## Found while building stage 2
+
+- **Tools offered to the model:** `edit`, `execute`, `glob`, `grep`, `question`, `read`, `shell`, `skill`,
+  `subagent`, `webfetch`, `websearch`, `write`. A `* * deny` rule sends an empty list, confirmed by recording the request.
+- **The tab denies** `subagent` (its requests belong to a child session the helper doesn't watch), `execute` (a
+  JavaScript runtime that scripts other tools), `question` (needs a form) and `skill`. A model that calls one anyway
+  gets "No tool named ...".
+- **Rules match the path as written.** With `read * allow`, a symlink in the project read a file outside it with no
+  prompt. So all reads ask, and the helper answers `once` only when the resolved path is inside the project and neither
+  the path nor its target is an env file. Links out of the project, and links to `.env`, show a card.
+- **`grep` and `glob` always ask**, because they could read a `.env` without touching its `read` rule.
+- `write` asks as action `edit`, and keeps no patch afterwards. The helper saves the permission request's patch in
+  `~/.local/state/opencode-tab/`, mode 600, so `/diff` and `/undo` can use it.
+- **`/diff` and `revert` with files need git.** `~/dev` isn't a repo, so `GET .../diff` returned nothing and `revert` with
+  `files: true` restored nothing while reporting success. The helper reverses the recorded patches with `patch -R`
+  instead, keeps a backup in memory, and drops the turn only if every patch applied. Shell commands can't be undone,
+  and the tab says so.
+- A card's code fence has a random name. Approve buttons appear only on that fence, because the model can print a
+  `command` block of its own into the same message.
+- A hot reload stops the tab's server but can leave a stale `server.json`. The next start replaces it.
+
 ## Not tested
 
-- The `always` reply, and `GET /api/permission/saved`. Leave `always` out of the UI for now.
-- The `question` tool and `/form` endpoints. Stage 2 needs a plan for a model that asks the user
-  something: under `* * ask`, `question` evaluates to `ask`.
+- The `always` reply, and `GET /api/permission/saved`. The helper refuses `always`.
 - Google models through OpenCode. Only the NVIDIA key was given to the test servers.
-- Sending a prompt while a turn is running (`delivery` is `steer` or `queue`; 409 is in the spec).
+- Sending a prompt while a turn is running. The tab blocks this (`delivery` is `steer` or `queue`; 409 is in the spec).
 - Image input through `files`.
 - Event stream overflow and reconnecting.
 - Whether a pending request ever expires beyond 75s. The client timeout makes this irrelevant.
-- `curl -K -` reading the config from stdin inside a Quickshell `Process`.
 
 ## Recorded payloads
 

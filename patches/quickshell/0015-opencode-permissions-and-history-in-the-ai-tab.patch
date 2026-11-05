@@ -1,0 +1,506 @@
+--- a/services/Ai.qml
++++ b/services/Ai.qml
+@@ -28,6 +28,7 @@
+     readonly property string apiKeyEnvVarName: "API_KEY"
+ 
+     signal responseFinished()
++    signal attentionNeeded() // A permission card appeared and may be below the fold
+ 
+     readonly property bool busy: requester.running
+     readonly property string opencodeHelper: `${Quickshell.env("HOME")}/.local/bin/opencode-tab`
+@@ -239,7 +240,8 @@
+             "search": [],
+             "none": [],
+         },
+-        "opencode": {
++        "opencode": { // Tools are chosen by the session's rules, not sent with the request
++            "functions": [],
+             "none": [],
+         }
+     }
+@@ -330,7 +332,7 @@
+             root.addModel(`opencode-${id}`, {
+                 "name": `OpenCode: ${name}`,
+                 "icon": icon,
+-                "description": Translation.tr("Online through OpenCode | Keeps the chat in an OpenCode session. Tools are off for now"),
++                "description": Translation.tr("Online through OpenCode | Keeps the chat in an OpenCode session. Asks before doing anything but reading the project"),
+                 "homepage": "https://opencode.ai",
+                 "endpoint": "http://127.0.0.1",
+                 "model": `nvidia/${model}`,
+@@ -622,6 +624,112 @@
+         }
+     }
+ 
++    // /history, /resume, /diff and /undo. The helper prints {ok, result} or {ok, error}.
++    Process {
++        id: opencodeCommand
++        property var onResult
++        stdout: StdioCollector {
++            onStreamFinished: {
++                try {
++                    const reply = JSON.parse(text);
++                    if (reply.ok) opencodeCommand.onResult(reply.result);
++                    else root.addMessage(Translation.tr("OpenCode: %1").arg(reply.error), root.interfaceRole);
++                } catch (e) {
++                    root.addMessage(Translation.tr("OpenCode did not answer"), root.interfaceRole);
++                }
++            }
++        }
++    }
++
++    function runOpencode(args, onResult) {
++        if (root.busy || opencodeCommand.running) {
++            root.addMessage(Translation.tr("Wait for the current reply to finish"), root.interfaceRole);
++            return;
++        }
++        root.opencodeServerWanted = true;
++        opencodeIdleTimer.restart();
++        opencodeCommand.onResult = onResult;
++        opencodeCommand.command = [root.opencodeHelper, ...args];
++        opencodeCommand.running = true;
++    }
++
++    function opencodeSessionOrAdvice() {
++        const id = root.apiStrategies.opencode.sessionId;
++        if (id.length === 0) root.addMessage(Translation.tr("No OpenCode chat yet. Send a message or use /history"), root.interfaceRole);
++        return id;
++    }
++
++    property var opencodeHistory: []
++    function showOpencodeHistory() {
++        runOpencode(["sessions"], sessions => {
++            root.opencodeHistory = sessions;
++            if (sessions.length === 0) {
++                root.addMessage(Translation.tr("No past OpenCode chats"), root.interfaceRole);
++                return;
++            }
++            const lines = sessions.map((session, i) => `${i + 1}. ${session.title} (${new Date(session.updated).toLocaleString(Qt.locale(), "dd/MM HH:mm")})`);
++            root.addMessage(`${Translation.tr("Past chats. Open one with /resume NUMBER")}\n\n${lines.join("\n")}`, root.interfaceRole);
++        });
++    }
++
++    function resumeOpencodeChat(number) {
++        const session = root.opencodeHistory[number - 1];
++        if (!session) {
++            root.addMessage(Translation.tr("Use /history first, then /resume NUMBER"), root.interfaceRole);
++            return;
++        }
++        if (root.models[root.currentModelId]?.api_format !== "opencode") {
++            root.addMessage(Translation.tr("Pick an OpenCode model first"), root.interfaceRole);
++            return;
++        }
++        runOpencode(["messages", session.id], messages => {
++            root.clearMessages();
++            root.apiStrategies.opencode.sessionId = session.id;
++            messages.forEach(message => {
++                const data = root.aiMessageComponent.createObject(root, {
++                    "role": message.role,
++                    "content": message.text,
++                    "rawContent": message.text,
++                    "model": root.currentModelId,
++                    "thinking": false,
++                    "done": true,
++                });
++                const id = idForMessage(data);
++                root.messageByID[id] = data;
++                root.messageIDs = [...root.messageIDs, id];
++            });
++        });
++    }
++
++    function showOpencodeDiff() {
++        const session = opencodeSessionOrAdvice();
++        if (session.length === 0) return;
++        runOpencode(["diff", session], files => {
++            if (files.length === 0) {
++                root.addMessage(Translation.tr("This chat has changed no files"), root.interfaceRole);
++                return;
++            }
++            const patches = files.map(file => file.patch.split("```").join("`\u200b`\u200b`")).join("\n");
++            root.addMessage(`${Translation.tr("Files changed in this chat:")}\n\n\`\`\`diff\n${patches}\n\`\`\``, root.interfaceRole);
++        });
++    }
++
++    function undoOpencodeTurn() {
++        const session = opencodeSessionOrAdvice();
++        if (session.length === 0) return;
++        runOpencode(["undo", session], result => {
++            for (let i = root.messageIDs.length - 1; i >= 0; i--) {
++                const role = root.messageByID[root.messageIDs[i]].role;
++                root.removeMessage(i);
++                if (role === "user") break;
++            }
++            const undone = result.files.length > 0 ? Translation.tr("Restored: %1").arg(result.files.join(", ")) : Translation.tr("No edits to restore");
++            const shell = result.shell > 0 ? `\n\n${Translation.tr("Shell commands from that turn were not undone: %1 ran.").arg(result.shell)}` : "";
++            const lost = result.lost > 0 ? `\n\n${Translation.tr("File writes from that turn were not undone: %1.").arg(result.lost)}` : "";
++            root.addMessage(`${Translation.tr("Last turn undone.")} ${undone}${shell}${lost}`, root.interfaceRole);
++        });
++    }
++
+     function stopResponse() {
+         if (!root.busy) return;
+         requester.stopRequested = true;
+@@ -660,6 +768,7 @@
+             requester.stopRequested = false;
+ 
+             if (model.api_format === "opencode") {
++                requester.currentStrategy.toolsOn = root.currentTool === "functions";
+                 root.opencodeServerWanted = true;
+                 opencodeIdleTimer.restart();
+             }
+@@ -739,7 +848,9 @@
+ 
+                 // Handle response line
+                 try {
++                    const hadCard = requester.message.permissionFence;
+                     const result = requester.currentStrategy.parseResponseLine(data, requester.message);
++                    if (requester.message.permissionFence.length > 0 && requester.message.permissionFence !== hadCard) root.attentionNeeded();
+                     // console.log("[Ai] Parsed response result: ", JSON.stringify(result, null, 2));
+ 
+                     if (result.functionCall) {
+@@ -826,13 +937,35 @@
+         root.messageIDs = [...root.messageIDs, id];
+     }
+ 
++    function answerPermission(message: AiMessageData, answer) {
++        const strategy = root.apiStrategies.opencode;
++        message.permissionFence = ""; // Hide the buttons. The card closes when the server confirms
++        opencodeReply.command = [root.opencodeHelper, "reply", strategy.sessionId, strategy.activeRequest, answer];
++        opencodeReply.running = true;
++    }
++
++    Process {
++        id: opencodeReply
++        onExited: (exitCode, exitStatus) => {
++            if (exitCode !== 0) root.stopResponse(); // Unanswered must never mean allowed
++        }
++    }
++
+     function rejectCommand(message: AiMessageData) {
++        if (message.permissionFence.length > 0) {
++            root.answerPermission(message, "reject");
++            return;
++        }
+         if (!message.functionPending) return;
+         message.functionPending = false; // User decided, no more "thinking"
+         addFunctionOutputMessage(message.functionName, Translation.tr("Command rejected by user"))
+     }
+ 
+     function approveCommand(message: AiMessageData) {
++        if (message.permissionFence.length > 0) {
++            root.answerPermission(message, "once");
++            return;
++        }
+         if (!message.functionPending) return;
+         message.functionPending = false; // User decided, no more "thinking"
+ 
+--- a/services/ai/OpenCodeApiStrategy.qml
++++ b/services/ai/OpenCodeApiStrategy.qml
+@@ -3,7 +3,9 @@
+ /**
+  * Talks to OpenCode through the opencode-tab helper, which prints one JSON event per line.
+  * OpenCode keeps the conversation in a session, so only the newest message is sent.
+- * Tools are off: the helper refuses any session without its deny rule.
++ * The helper checks the session's permission rules before every message. Requests show up
++ * here as cards, one at a time. A card's fence has a random name that only this message
++ * knows, because the model can write anything into the same text.
+  */
+ ApiStrategy {
+     property string helperPath: ""
+@@ -13,6 +15,12 @@
+     property bool fileSkipped: false
+     property bool isReasoning: false
+     property bool hasText: false
++    property bool turnExplained: false // A denied card already says why the turn ended
++    property bool toolsOn: true
++    property string activeRequest: ""
++    property string activeFence: ""
++    property string activeLang: ""
++    property var queuedRequests: []
+ 
+     function buildEndpoint(model: AiModel): string {
+         return model.endpoint;
+@@ -40,7 +48,7 @@
+         let delimiter = "OPENCODE_TAB_END";
+         while (pendingText.includes(delimiter)) delimiter += "_X";
+         return "#!/usr/bin/env bash\n"
+-            + `exec ${shellQuote(helperPath)} send ${shellQuote(pendingModel)} ${shellQuote(sessionId)} <<'${delimiter}'\n`
++            + `exec ${shellQuote(helperPath)} send ${shellQuote(pendingModel)} ${shellQuote(sessionId)} ${toolsOn ? "tools" : "off"} <<'${delimiter}'\n`
+             + `${pendingText}\n${delimiter}\n`;
+     }
+ 
+@@ -55,6 +63,61 @@
+         add(message, "\n\n</think>\n\n");
+     }
+ 
++    function closeOpenFence(message) {
++        if ((message.content.split("```").length - 1) % 2 === 1) add(message, "\n```\n");
++    }
++
++    function describe(action) {
++        switch (action) {
++        case "shell": return qsTr("run a command");
++        case "edit": return qsTr("edit a file");
++        case "write": return qsTr("write a file");
++        case "read": return qsTr("read a protected file");
++        case "external_directory": return qsTr("use something outside the project");
++        case "webfetch": return qsTr("fetch a web page");
++        case "websearch": return qsTr("search the web");
++        case "grep":
++        case "glob": return qsTr("search files");
++        }
++        return action;
++    }
++
++    function showNextRequest(message) {
++        if (activeRequest.length > 0 || queuedRequests.length === 0) return;
++        const request = queuedRequests[0];
++        queuedRequests = queuedRequests.slice(1);
++        endReasoning(message);
++        closeOpenFence(message);
++        const resources = (request.resources ?? []).join("\n");
++        const body = request.patch?.length > 0 ? `${resources}\n${request.patch}` : resources;
++        activeRequest = request.id;
++        activeLang = request.patch?.length > 0 ? "diff" : (request.action === "shell" ? "bash" : "txt");
++        activeFence = `permission_${activeLang}_${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
++        // A fence inside the body would end the card early and hide the rest of it
++        const shown = body.split("```").join("`\u200b`\u200b`");
++        add(message, `\n\n${qsTr("OpenCode wants to %1:").arg(describe(request.action))}\n\n\`\`\`${activeFence}\n${shown}\n\`\`\`\n`);
++        message.permissionFence = activeFence;
++    }
++
++    function closeCard(message, outcome) {
++        const opening = "```" + activeFence + "\n";
++        const opened = "```" + activeLang + "\n";
++        message.content = message.content.replace(opening, opened);
++        message.rawContent = message.rawContent.replace(opening, opened);
++        message.permissionFence = "";
++        activeRequest = "";
++        activeFence = "";
++        add(message, `\n_${outcome}_\n\n`);
++    }
++
++    function clearRequests(message) {
++        queuedRequests = [];
++        if (activeRequest.length > 0) {
++            turnExplained = true;
++            closeCard(message, qsTr("Denied: the turn ended."));
++        }
++    }
++
+     function parseResponseLine(line, message) {
+         const event = JSON.parse(line);
+         if (fileSkipped) {
+@@ -77,20 +140,45 @@
+             hasText = true;
+             add(message, event.delta);
+             return {};
++        case "permission":
++            queuedRequests = [...queuedRequests, event];
++            showNextRequest(message);
++            return {};
++        case "permission_replied": {
++            const allowed = event.reply === "once";
++            if (!allowed) turnExplained = true;
++            if (event.id === activeRequest) {
++                closeCard(message, allowed ? qsTr("Allowed") : (event.timeout ? qsTr("Denied: no answer in time") : qsTr("Denied")));
++            } else {
++                queuedRequests = queuedRequests.filter(request => request.id !== event.id);
++            }
++            showNextRequest(message);
++            return {};
++        }
++        case "tool":
++            endReasoning(message);
++            if (!event.denied) {
++                const step = event.target.length > 0 ? `${event.name}: ${event.target}` : event.name;
++                add(message, `\n\n\`${step.split("`").join("'")}\`${event.ok ? "" : ` _${qsTr("failed")}_`}\n\n`);
++            }
++            return {};
+         case "usage": {
+             const input = event.tokens?.input ?? -1;
+             const output = event.tokens?.output ?? -1;
+             return { tokenUsage: { input: input, output: output, total: input + output } };
+         }
+         case "succeeded":
++            clearRequests(message);
+             endReasoning(message);
+             if (!hasText) add(message, `_${qsTr("The model finished without writing a reply.")}_`);
+             return { finished: true };
+         case "interrupted":
++            clearRequests(message);
+             endReasoning(message);
+-            if (!hasText) add(message, `_${qsTr("Stopped.")}_`);
++            if (!hasText && !turnExplained) add(message, `_${qsTr("Stopped.")}_`);
+             return { finished: true };
+         case "failed":
++            clearRequests(message);
+             endReasoning(message);
+             add(message, `**${qsTr("Error")}**: ${event.error}`);
+             return { finished: true };
+@@ -98,9 +186,19 @@
+         return {};
+     }
+ 
++    // Runs when the helper exits, which is the only sign of a stop button press
++    function onRequestFinished(message) {
++        clearRequests(message);
++        return {};
++    }
++
+     function reset() {
+         isReasoning = false;
+         hasText = false;
++        turnExplained = false;
++        activeRequest = "";
++        activeFence = "";
++        queuedRequests = [];
+     }
+ 
+     function newSession() {
+--- a/services/ai/AiMessageData.qml
++++ b/services/ai/AiMessageData.qml
+@@ -20,5 +20,6 @@
+     property var functionCall
+     property string functionResponse
+     property bool functionPending: false
++    property string permissionFence // Name of the code fence holding a live OpenCode permission card
+     property bool visibleToUser: true
+ }
+--- a/modules/ii/sidebarLeft/AiChat.qml
++++ b/modules/ii/sidebarLeft/AiChat.qml
+@@ -42,8 +42,33 @@
+         }
+     }
+ 
++    function opencodeOnly(action) {
++        if (Ai.models[Ai.currentModelId]?.api_format === "opencode") action();
++        else Ai.addMessage(Translation.tr("This needs an OpenCode model. Pick one with /model"), Ai.interfaceRole);
++    }
++
+     property var allCommands: [
+         {
++            name: "history",
++            description: Translation.tr("List past OpenCode chats"),
++            execute: () => root.opencodeOnly(() => Ai.showOpencodeHistory())
++        },
++        {
++            name: "resume",
++            description: Translation.tr("Open a chat from /history by number"),
++            execute: args => root.opencodeOnly(() => Ai.resumeOpencodeChat(parseInt(args[0])))
++        },
++        {
++            name: "diff",
++            description: Translation.tr("Show the files this OpenCode chat changed"),
++            execute: () => root.opencodeOnly(() => Ai.showOpencodeDiff())
++        },
++        {
++            name: "undo",
++            description: Translation.tr("Undo the last OpenCode turn and its file changes"),
++            execute: () => root.opencodeOnly(() => Ai.undoOpencodeTurn())
++        },
++        {
+             name: "attach",
+             description: Translation.tr("Attach a file. Only works with Gemini."),
+             execute: args => {
+@@ -197,6 +222,13 @@
+         },
+     ]
+ 
++    Connections {
++        target: Ai
++        function onAttentionNeeded() {
++            Qt.callLater(messageListView.positionViewAtEnd);
++        }
++    }
++
+     function handleInput(inputText) {
+         if (inputText.startsWith(root.commandPrefix)) {
+             // Handle special commands
+@@ -398,7 +430,7 @@
+                 shown: Ai.messageIDs.length === 0
+                 icon: "neurology"
+                 title: Translation.tr("Large language models")
+-                description: Translation.tr("Type /key to get started with online models\nCtrl+O to expand sidebar\nCtrl+P to pin sidebar\nCtrl+D to detach sidebar")
++                description: Translation.tr("Click the model name below to choose a model\n/history opens past OpenCode chats\nCtrl+O to expand sidebar\nCtrl+P to pin sidebar\nCtrl+D to detach sidebar")
+                 shape: MaterialShape.Shape.PixelCircle
+             }
+ 
+@@ -484,10 +516,10 @@
+         }
+ 
+         Rectangle { // Input area
+-            id: inputWrapper
++            id: inputWrapper // Rounder than the stock box, to read as a pill
+             property real spacing: 5
+             Layout.fillWidth: true
+-            radius: Appearance.rounding.normal - root.padding
++            radius: Appearance.rounding.verylarge
+             color: Appearance.colors.colLayer2
+             implicitHeight: Math.max(inputFieldRowLayout.implicitHeight + inputFieldRowLayout.anchors.topMargin + commandButtonsRow.implicitHeight + commandButtonsRow.anchors.bottomMargin + spacing, 45) + (attachedFileIndicator.implicitHeight + spacing + attachedFileIndicator.anchors.topMargin)
+             clip: true
+@@ -719,7 +751,7 @@
+                     Layout.rightMargin: 5
+                     implicitWidth: 40
+                     implicitHeight: 40
+-                    buttonRadius: Appearance.rounding.small
++                    buttonRadius: Appearance.rounding.full
+                     enabled: Ai.busy || messageInputField.text.length > 0
+                     toggled: enabled
+ 
+@@ -773,7 +805,12 @@
+                     // Model indicator
+                     icon: "api"
+                     text: Ai.getModel().name
+-                    tooltipText: Translation.tr("Current model: %1\nSet it with %2model MODEL").arg(Ai.getModel().name).arg(root.commandPrefix)
++                    tooltipText: Translation.tr("Current model: %1\nClick to choose another").arg(Ai.getModel().name)
++                    onClicked: {
++                        messageInputField.text = `${root.commandPrefix}model `;
++                        messageInputField.cursorPosition = messageInputField.text.length;
++                        messageInputField.forceActiveFocus();
++                    }
+                 }
+ 
+                 ApiInputBoxIndicator {
+--- a/modules/ii/sidebarLeft/ApiInputBoxIndicator.qml
++++ b/modules/ii/sidebarLeft/ApiInputBoxIndicator.qml
+@@ -9,6 +9,7 @@
+     property string icon: "api"
+     property string text: ""
+     property string tooltipText: ""
++    signal clicked()
+     implicitHeight: rowLayout.implicitHeight + 4 * 2
+     implicitWidth: rowLayout.implicitWidth + 4 * 2
+ 
+@@ -36,6 +37,7 @@
+         sourceComponent: MouseArea {
+             id: mouseArea
+             hoverEnabled: true
++            onClicked: root.clicked()
+ 
+             StyledToolTip {
+                 id: toolTip
+--- a/modules/ii/sidebarLeft/aiChat/MessageCodeBlock.qml
++++ b/modules/ii/sidebarLeft/aiChat/MessageCodeBlock.qml
+@@ -19,8 +19,10 @@
+     property var segmentContent: ({})
+     property var segmentLang: "txt"
+     property var messageData: {}
+-    property bool isCommandRequest: segmentLang === "command"
+-    property var displayLang: (isCommandRequest ? "bash" : segmentLang)
++    // A permission card's fence has a random name, so a model can't print its own Approve button
++    property bool isPermissionCard: segmentLang.length > 0 && segmentLang === messageData?.permissionFence
++    property bool isCommandRequest: segmentLang === "command" || isPermissionCard
++    property var displayLang: isPermissionCard ? segmentLang.split("_")[1] : (isCommandRequest ? "bash" : segmentLang)
+ 
+     property real codeBlockBackgroundRounding: Appearance.rounding.small
+     property real codeBlockHeaderPadding: 3
+@@ -249,7 +251,7 @@
+                     }
+                 }
+                 Loader {
+-                    active: root.isCommandRequest && root.messageData.functionPending
++                    active: root.isPermissionCard || (root.segmentLang === "command" && root.messageData.functionPending)
+                     visible: active
+                     Layout.fillWidth: true
+                     Layout.margins: 6

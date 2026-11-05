@@ -15,8 +15,8 @@ edits, diffs and undo. Existing direct models (NVIDIA, Gemini) must keep working
 - OpenCode runs **on demand** only. No service that starts at login: the user chose this,
   and auto mode blocked one anyway.
 - Bind to localhost only. Keys come from the keyring, never from files.
-- Tools stay disabled in the tab until Allow/Deny prompts work (stage 2).
-- `SUPER + A` opens the stock left sidebar again (changed by the user 2026-11-04, ahead of stage 2). The panel has no key now.
+- Every tool waits for an Allow in the tab, except plain reads inside the project. `/tool none` turns tools off.
+- `SUPER + A` opens the stock left sidebar again (changed by the user 2026-11-04, ahead of stage 2).
 - Start folder is `~/dev`, not the home folder, which holds Drive, OneDrive and secrets.
 - The live config sets `"permission": {"*": "ask"}`, so the panel prompts too (decided 2026-11-04, after stage 0 found it allowed nearly everything).
 - Stage 2 allows file reads inside the project without a prompt, and asks for everything else, including `.env` files
@@ -29,7 +29,7 @@ edits, diffs and undo. Existing direct models (NVIDIA, Gemini) must keep working
 | OpenCode 2.0.24 | package `opencode`, repo `extra`, MIT | v2 has no `web` command |
 | Config | `~/.config/opencode/opencode.json` | NVIDIA provider, `{env:NVIDIA_API_KEY}`, default Mistral Large 4 |
 | Launcher | `~/.local/bin/opencode-app` | exports keys, `opencode pair`, Chrome `--app`, stops service on close |
-| Panel | `~/.local/bin/opencode-panel` | toggles `special:opencode` |
+| Tab helper | `~/.local/bin/opencode-tab` | private server, sends messages, answers permissions, diff, undo, history |
 | Rules and key | `~/.config/hypr/custom/rules.lua`, `custom/keybinds.lua` | merged by section in the repo copies, which differ from live |
 | AI tab | `~/.config/quickshell/ii/modules/ii/sidebarLeft/`, `services/Ai.qml` | in patch 0013 |
 | Provider code | `services/ai/*ApiStrategy.qml` | one strategy per API format |
@@ -93,7 +93,6 @@ left behind.
 
 **Status:** done 2026-11-04 in patch 0014 and `opencode-tab`, tested in the real tab: streaming, stop, Enter
 during a reply, server start on first message, server stop on switching to a direct model, nothing left behind.
-Known issue: the tool chip still says "Functions" on OpenCode models, although tools are off.
 The server starts on the first message, not when a model is picked, so a remembered model cannot
 start it at login. It stops on switching to a direct model, after 15 idle minutes, or with the shell.
 Limits for now: no attachments, a loaded chat or earlier direct-model messages are not sent to OpenCode,
@@ -107,9 +106,16 @@ the panel.
 **Done when** nothing but project reads runs without an explicit Allow, proven by a denied edit changing nothing
 and by a read outside the project prompting.
 
+**Status:** done 2026-11-05 in patch 0015. Tested in the real tab with a real model (denied edit changed nothing,
+approved edit ran, card scrolls into view) and with 32 scripted attacks through a mock provider. See the stage 0 record.
+
 ### Stage 3: extras
 Chat history from sessions, diffs, undo through revert, and the welcome screen, model menu,
 pill input and better code blocks from the earlier UI list.
+
+**Status:** done 2026-11-05 in patch 0015, except code blocks: `/history`, `/resume N`, `/diff`, `/undo`, a model menu on
+the model chip, a new welcome text, and a rounder input. Code blocks only gained a correct Diff header; the earlier
+UI list isn't written down anywhere, so ask the user what was meant.
 
 ## Working rules learned the hard way
 
@@ -122,6 +128,8 @@ pill input and better code blocks from the earlier UI list.
   bars (`hyprctl monitors` reserved top 80, not 40). Check `qs list --all`; `pgrep -x qs`
   misses `quickshell`. Kill the older PID.
 - **Reload check:** `Configuration Loaded` count in `qs -c ii log`. The watcher can lag 8s.
+- **Escape closes the sidebar.** Anything typed next lands in the focused window. Check `hyprctl layers` before every
+  keystroke when driving the tab, and never send Escape.
 - **`ydotool mousemove --absolute` doubles coordinates here.** Halve them, and check `hyprctl cursorpos` before
   clicking. Focus follows the mouse, so a stray move changes the active window. Keyboard stays in the open sidebar.
 - **`ls` is aliased to `eza`,** which can hang forever in a script waiting on stdin. Use `command ls`.
@@ -145,5 +153,5 @@ and diff against the live tree. Only `widgets/shapes` (a submodule) may differ.
   Num Lock at reboot, real chat in the OpenCode panel.
 - `custom/execs.lua`, `keybinds.lua`, `rules.lua` differ both ways between repo and live.
 - 465 system updates pending; a Hyprland bump means rebuilding `hyprbars`.
-- The OpenCode launcher, panel, config, `nvidia-ai` and the cursor script are on branch `opencode-ai-tab`, not `main` yet. Merge when ready; they work without the stages below.
+- The OpenCode launcher, tab helper, config, `nvidia-ai` and the cursor script are on branch `opencode-ai-tab`, not `main` yet. Merge when ready.
 - Tab loop incident, not reproduced: record the time and what opened.
