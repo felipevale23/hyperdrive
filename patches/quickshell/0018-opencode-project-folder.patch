@@ -1,0 +1,142 @@
+diff --git a/modules/ii/sidebarLeft/AiChat.qml b/modules/ii/sidebarLeft/AiChat.qml
+index 0ad0ddf..d0df410 100644
+--- a/modules/ii/sidebarLeft/AiChat.qml
++++ b/modules/ii/sidebarLeft/AiChat.qml
+@@ -53,6 +53,11 @@ Item {
+             description: Translation.tr("Switch the OpenCode agent: build or plan"),
+             execute: args => root.opencodeOnly(() => Ai.setOpencodeAgent(args[0]))
+         },
++        {
++            name: "project",
++            description: Translation.tr("Choose the folder for a new OpenCode chat"),
++            execute: args => root.opencodeOnly(() => Ai.chooseOpencodeFolder(args.join(" ").trim()))
++        },
+         {
+             name: "history",
+             description: Translation.tr("List past OpenCode chats"),
+@@ -879,6 +884,20 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+                     onClicked: Ai.setOpencodeAgent(Ai.opencodeAgent === "plan" ? "build" : "plan")
+                 }
+ 
++                ApiInputBoxIndicator {
++                    // Project folder indicator
++                    visible: Ai.opencodeModel
++                    icon: "folder"
++                    readonly property string folderName: Ai.opencodeFolder.length > 0 ? Ai.opencodeFolder.split("/").pop() : ".agents"
++                    text: folderName.length > 10 ? `${folderName.slice(0, 9)}…` : folderName
++                    tooltipText: Translation.tr("Project folder: %1\nClick to choose another").arg(Ai.opencodeFolder.length > 0 ? Ai.opencodeFolder : "~/.agents")
++                    onClicked: {
++                        messageInputField.text = `${root.commandPrefix}project `;
++                        messageInputField.cursorPosition = messageInputField.text.length;
++                        messageInputField.forceActiveFocus();
++                    }
++                }
++
+                 ApiInputBoxIndicator {
+                     // Tool indicator
+                     icon: "service_toolbox"
+@@ -896,7 +915,7 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+ 
+                     Repeater {
+                         // Command buttons
+-                        model: commandButtonsRow.commandsShown
++                        model: Ai.opencodeModel ? commandButtonsRow.commandsShown.slice(1) : commandButtonsRow.commandsShown // No room for "/" beside the folder chip
+                         delegate: ApiCommandButton {
+                             property string commandRepresentation: `${root.commandPrefix}${modelData.name}`
+                             buttonText: commandRepresentation
+diff --git a/services/Ai.qml b/services/Ai.qml
+index 0135a3e..e6daf67 100644
+--- a/services/Ai.qml
++++ b/services/Ai.qml
+@@ -34,6 +34,8 @@ Singleton {
+     readonly property string opencodeHelper: `${Quickshell.env("HOME")}/.local/bin/opencode-tab`
+     property bool opencodeServerWanted: false
+     property string opencodeAgent: "build"
++    property string opencodeFolder: "" // This chat's project. Never remembered: empty means ~/.agents
++    property var opencodeFolders: []
+     readonly property bool opencodeModel: models[currentModelId]?.api_format === "opencode"
+     property var mentionResults: []
+     property string mentionQuery: ""
+@@ -608,6 +610,7 @@ Singleton {
+         root.tokenCount.output = -1;
+         root.tokenCount.total = -1;
+         root.apiStrategies.opencode.newSession();
++        root.opencodeFolder = "";
+     }
+ 
+     // Runs only after the first OpenCode message, never just because a model is selected,
+@@ -676,7 +679,7 @@ Singleton {
+         root.opencodeServerWanted = true;
+         opencodeIdleTimer.restart();
+         opencodeFinder.query = root.mentionQuery;
+-        opencodeFinder.command = [root.opencodeHelper, "find", root.mentionQuery];
++        opencodeFinder.command = [root.opencodeHelper, "find", root.mentionQuery, root.opencodeFolder];
+         opencodeFinder.running = true;
+     }
+ 
+@@ -729,6 +732,7 @@ Singleton {
+         runOpencode(["messages", session.id], messages => {
+             root.clearMessages();
+             root.apiStrategies.opencode.sessionId = session.id;
++            root.opencodeFolder = session.folder;
+             messages.forEach(message => {
+                 const data = root.aiMessageComponent.createObject(root, {
+                     "role": message.role,
+@@ -745,6 +749,28 @@ Singleton {
+         });
+     }
+ 
++    // Only ever called from a typed /project. A chat can't change folder, so this starts a new one.
++    function chooseOpencodeFolder(choice) {
++        if (choice.length === 0) {
++            runOpencode(["folders"], folders => {
++                root.opencodeFolders = folders;
++                const lines = folders.map((folder, i) => `${i + 1}. ${folder}`);
++                root.addMessage(`${Translation.tr("Project folders. Use /project NUMBER or /project PATH. This starts a new chat")}\n\n${lines.join("\n")}`, root.interfaceRole);
++            });
++            return;
++        }
++        const listed = /^\d+$/.test(choice) ? root.opencodeFolders[parseInt(choice) - 1] : choice;
++        if (!listed) {
++            root.addMessage(Translation.tr("Use /project first, then /project NUMBER"), root.interfaceRole);
++            return;
++        }
++        runOpencode(["check", listed], folder => {
++            root.clearMessages();
++            root.opencodeFolder = folder;
++            root.addMessage(Translation.tr("New chat in %1. Files here can be read without asking").arg(folder), root.interfaceRole);
++        });
++    }
++
+     function showOpencodeDiff() {
+         const session = opencodeSessionOrAdvice();
+         if (session.length === 0) return;
+@@ -814,6 +840,7 @@ Singleton {
+             if (model.api_format === "opencode") {
+                 requester.currentStrategy.toolsOn = root.currentTool === "functions";
+                 requester.currentStrategy.agent = root.opencodeAgent;
++                requester.currentStrategy.folder = root.opencodeFolder;
+                 root.opencodeServerWanted = true;
+                 opencodeIdleTimer.restart();
+             }
+diff --git a/services/ai/OpenCodeApiStrategy.qml b/services/ai/OpenCodeApiStrategy.qml
+index 2d00343..b221364 100644
+--- a/services/ai/OpenCodeApiStrategy.qml
++++ b/services/ai/OpenCodeApiStrategy.qml
+@@ -10,6 +10,7 @@ import QtQuick
+ ApiStrategy {
+     property string helperPath: ""
+     property string sessionId: ""
++    property string folder: "" // Empty means the default, ~/.agents
+     property string pendingText: ""
+     property string pendingModel: ""
+     property bool fileSkipped: false
+@@ -50,7 +51,7 @@ ApiStrategy {
+         let delimiter = "OPENCODE_TAB_END";
+         while (pendingText.includes(delimiter)) delimiter += "_X";
+         return "#!/usr/bin/env bash\n"
+-            + `exec ${shellQuote(helperPath)} send ${shellQuote(pendingModel)} ${shellQuote(sessionId)} ${toolsOn ? "tools" : "off"} ${shellQuote(agent)} <<'${delimiter}'\n`
++            + `exec ${shellQuote(helperPath)} send ${shellQuote(pendingModel)} ${shellQuote(sessionId)} ${toolsOn ? "tools" : "off"} ${shellQuote(agent)} ${shellQuote(folder)} <<'${delimiter}'\n`
+             + `${pendingText}\n${delimiter}\n`;
+     }
+ 

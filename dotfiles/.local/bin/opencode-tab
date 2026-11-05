@@ -2,10 +2,12 @@
 """Connects the Quickshell AI tab to OpenCode.
 
   opencode-tab serve                       run a private server until told to stop
-  opencode-tab send MODEL SESSION MODE AGENT   send the message on stdin, print events as JSON lines
+  opencode-tab send MODEL SESSION MODE AGENT [FOLDER]   send the message on stdin, print events as JSON lines
   opencode-tab reply SESSION REQUEST ANSWER   answer a permission request: once or reject
-  opencode-tab find QUERY                  search project files and folders for @ mentions
-  opencode-tab sessions                    list past tab chats as JSON
+  opencode-tab find QUERY [FOLDER]         search project files and folders for @ mentions
+  opencode-tab folders                     list folders a chat can use as JSON
+  opencode-tab check FOLDER                print the real path of a folder a chat can use
+  opencode-tab sessions                    list past tab chats, from every folder, as JSON
   opencode-tab messages SESSION            print a chat's messages as JSON
   opencode-tab diff SESSION                print the files a chat changed as JSON
   opencode-tab undo SESSION                undo the last turn, its file changes included
@@ -14,7 +16,11 @@ MODEL is provider/model. SESSION may be empty, which starts a new session. MODE 
 tools, where everything but project reads waits for an answer, or off. AGENT is build
 or plan. Plan can't edit or run commands. @path in a message attaches a project file or
 folder, and @general or @explore asks for a subagent. Attachments skip OpenCode's
-permission checks, so anything outside the project or any env file is refused here.
+permission checks, so anything outside the project or any private file is refused here.
+
+FOLDER is the project for a new chat, ~/.agents if empty. An existing chat always keeps
+the folder stored in its session, and a different FOLDER is refused. The folder decides
+which reads need no prompt, so it must be inside the home folder and not hold secrets.
 
 The server listens on localhost with a new password each launch. Keys come from the
 keyring and reach only the server's environment. Every session carries explicit rules,
@@ -38,7 +44,7 @@ import urllib.parse
 
 RUNTIME = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/opencode-tab-{os.getuid()}", "opencode-tab")
 STATE = os.path.join(RUNTIME, "server.json")
-FOLDER = os.environ.get("OPENCODE_TAB_FOLDER") or os.path.expanduser("~/dev")
+FOLDER = os.environ.get("OPENCODE_TAB_FOLDER") or os.path.expanduser("~/.agents")
 TOOLS_OFF = [{"action": "*", "resource": "*", "effect": "deny"}]
 # The last matching rule wins. Everything asks, reads included: OpenCode matches the path
 # as written, so a read rule would follow a symlink out of the project. Plain project
@@ -54,6 +60,10 @@ PLAN_ON = TOOLS_ON + [{"action": tool, "resource": "*", "effect": "deny"} for to
 AGENTS = ("build", "plan")
 SUBAGENTS = ("general", "explore")
 MENTION = re.compile(r'''(?<!\S)@(?:"([^"]+)"|(\S+))''')
+# Never read without a prompt, wherever they sit in a project. .git holds remote URLs with tokens.
+PRIVATE = re.compile(r"\.env(\..*)?|.*\.env|\.git|\.git-credentials|\.ssh|\.gnupg|\.aws|\.kube|\.docker|\.netrc|\.npmrc|"
+                     r"\.pypirc|\.password-store|keyrings|id_(rsa|dsa|ecdsa|ed25519)(\..*)?|.*\.(pem|key|p12|pfx)")
+HOME_PRIVATE = (".config", ".local", ".cache", ".mozilla")  # too much in them to be a project
 
 
 def rules_for(mode, agent):
@@ -178,7 +188,7 @@ def data_of(reply):
     return reply.get("data", reply) if isinstance(reply, dict) else {}
 
 
-def prepare_session(api, session, model, rules, title, agent):
+def prepare_session(api, session, model, rules, title, agent, folder=""):
     """Returns a session id with exactly these rules, on the wanted model, or raises."""
     provider, _, model_id = model.partition("/")
     wanted = {"id": model_id, "providerID": provider}
@@ -187,9 +197,12 @@ def prepare_session(api, session, model, rules, title, agent):
         status, reply = api.call("GET", f"/api/session/{session}")
         if status == 200:
             info = data_of(reply)
+            use_session_folder(info, folder)
         elif status != 404:
             raise RuntimeError(f"could not read the session ({status})")
     if info is None:
+        global FOLDER
+        FOLDER = check_folder(folder)
         status, reply = api.call("POST", "/api/session", {
             "title": title, "location": {"directory": FOLDER}, "model": wanted, "permissions": rules, "agent": agent,
             "metadata": {"source": "ai-tab"}})
@@ -213,6 +226,41 @@ def prepare_session(api, session, model, rules, title, agent):
     return info["id"]
 
 
+def private_path(path):
+    return any(PRIVATE.fullmatch(part) for part in path.split(os.sep))
+
+
+def check_folder(folder):
+    """The real path of a folder a chat may use, or raises. Everything inside it can be read without a prompt."""
+    if not folder:
+        return os.path.realpath(FOLDER)
+    written = os.path.expanduser(folder)
+    if not os.path.isabs(written):
+        raise RuntimeError(f"use a full path, not {folder}")
+    real = os.path.realpath(written)
+    home = os.path.realpath(os.path.expanduser("~"))
+    if not os.path.isdir(real):
+        raise RuntimeError(f"{folder} is not a folder")
+    if not real.startswith(home + os.sep):
+        raise RuntimeError("the folder must be inside the home folder, and can't be the home folder itself")
+    inside = os.path.relpath(real, home)
+    if private_path(inside) or inside.split(os.sep)[0] in HOME_PRIVATE:
+        raise RuntimeError(f"{folder} holds private files, so it can't be a project")
+    return real
+
+
+def use_session_folder(info, wanted=""):
+    """A chat stays in the folder its session records, whatever the caller thinks."""
+    global FOLDER
+    directory = (info.get("location") or {}).get("directory")
+    if not directory:
+        raise RuntimeError("this chat has no folder")
+    folder = check_folder(directory)
+    if wanted and check_folder(wanted) != folder:
+        raise RuntimeError(f"this chat belongs to {folder}")
+    FOLDER = folder
+
+
 def journal_path(session):
     return os.path.join(JOURNALS, f"{session}.jsonl")
 
@@ -234,13 +282,13 @@ def journal_read(session):
 
 
 def safe_path(resource):
-    """True for a path that really stays inside the project and isn't an env file."""
+    """True for a path that really stays inside the project and isn't a private file."""
     root = os.path.realpath(FOLDER)
     written = os.path.join(FOLDER, resource)
     real = os.path.realpath(written)
     if not real.startswith(root + os.sep):
         return False
-    return not any(re.fullmatch(r"\.env(\..*)?|.*\.env", os.path.basename(path.rstrip("/"))) for path in (written, real))
+    return not private_path(os.path.relpath(written, FOLDER)) and not private_path(os.path.relpath(real, root))
 
 
 def safe_read(request):
@@ -267,11 +315,14 @@ def read_mentions(text):
 def target_of(tool_input):
     for key in ("path", "command", "pattern", "url", "query", "description"):
         if isinstance(tool_input, dict) and tool_input.get(key):
-            return str(tool_input[key]).splitlines()[0][:120]
+            value = str(tool_input[key]).splitlines()[0]
+            if key == "path" and value.startswith(FOLDER + os.sep):
+                value = value[len(FOLDER) + 1:]
+            return value[:120]
     return ""
 
 
-def send(model, session, mode, agent, text):
+def send(model, session, mode, agent, folder, text):
     die_with_parent()
     active = {}
     timers = {}
@@ -296,7 +347,7 @@ def send(model, session, mode, agent, text):
     signal.signal(signal.SIGTERM, stop)
     try:
         api = connect()
-        sid = prepare_session(api, session, model, rules_for(mode, agent), " ".join(text.split())[:60] or "AI tab", agent)
+        sid = prepare_session(api, session, model, rules_for(mode, agent), " ".join(text.split())[:60] or "AI tab", agent, folder)
         family.add(sid)
         active.update(api=api, id=sid)
         emit({"type": "session", "id": sid})
@@ -360,6 +411,8 @@ def send(model, session, mode, agent, text):
                 tools[data.get("id")] = {"name": data.get("name", "")}
             elif kind == "session.tool.called":
                 tools.setdefault(data.get("id"), {}).update(target=target_of(data.get("input")), input=data.get("input"))
+                emit({"type": "step", "name": tools[data.get("id")].get("name", ""), "target": tools[data.get("id")]["target"],
+                      "subagent": data.get("sessionID") != sid})
             elif kind in ("session.tool.success", "session.tool.failed"):
                 tool = tools.get(data.get("id"), {})
                 error = data.get("error") or {}
@@ -397,17 +450,31 @@ def checked(reply_):
     return body
 
 
-def find(query):
-    params = urllib.parse.urlencode({"directory": FOLDER, "query": query, "limit": 15})
+def find(query, folder=""):
+    global FOLDER
+    FOLDER = check_folder(folder)
+    # The spec's deepObject form. A plain directory= is ignored, and searches the server's own folder.
+    params = urllib.parse.urlencode({"location[directory]": FOLDER, "query": query, "limit": 15})
     found = checked(connect().call("GET", f"/api/fs/find?{params}"))["data"]
     agents = [{"path": name, "type": "agent"} for name in SUBAGENTS if name.startswith(query)]
     return agents + [item for item in found if safe_path(item["path"])][:12]
 
 
+def folders():
+    found = {check_folder("")}
+    for project in checked(connect().call("GET", "/api/project")):
+        try:
+            found.add(check_folder(project.get("canonical")))
+        except RuntimeError:
+            pass  # gone, or not somewhere a chat may work
+    return sorted(found)
+
+
 def sessions():
-    query = urllib.parse.urlencode({"directory": FOLDER, "limit": 100, "order": "desc"})
+    query = urllib.parse.urlencode({"limit": 100, "order": "desc"})
     found = checked(connect().call("GET", f"/api/session?{query}"))["data"]
-    return [{"id": item["id"], "title": item.get("title", ""), "updated": item["time"]["updated"]}
+    return [{"id": item["id"], "title": item.get("title", ""), "updated": item["time"]["updated"],
+             "folder": (item.get("location") or {}).get("directory", "")}
             for item in found
             if (item.get("metadata") or {}).get("source") == "ai-tab" or item.get("title") == "AI tab"][:30]
 
@@ -452,6 +519,7 @@ def diff(session):
 def undo(session):
     """Reverses the last turn's edits, then drops the turn. On any failure, nothing changes."""
     api = connect()
+    use_session_folder(data_of(checked(api.call("GET", f"/api/session/{session}"))))
     items = all_messages(api, session)
     last = max((i for i, item in enumerate(items) if item.get("type") == "user"), default=None)
     if last is None:
@@ -502,10 +570,14 @@ def main():
     args = sys.argv[1:]
     if args == ["serve"]:
         return serve()
-    if len(args) == 5 and args[0] == "send" and args[3] in ("tools", "off") and args[4] in AGENTS:
-        return send(args[1], args[2], args[3], args[4], sys.stdin.read().removesuffix("\n"))
-    if len(args) == 2 and args[0] == "find":
-        return report(find, args[1])
+    if len(args) in (5, 6) and args[0] == "send" and args[3] in ("tools", "off") and args[4] in AGENTS:
+        return send(*args[1:5], args[5] if len(args) == 6 else "", sys.stdin.read().removesuffix("\n"))
+    if len(args) in (2, 3) and args[0] == "find":
+        return report(find, *args[1:])
+    if args == ["folders"]:
+        return report(folders)
+    if len(args) == 2 and args[0] == "check":
+        return report(check_folder, args[1])
     if len(args) == 4 and args[0] == "reply":
         return reply(*args[1:])
     if args == ["sessions"]:

@@ -1,0 +1,140 @@
+diff --git a/modules/common/Appearance.qml b/modules/common/Appearance.qml
+index bedf01e..6afd824 100644
+--- a/modules/common/Appearance.qml
++++ b/modules/common/Appearance.qml
+@@ -414,5 +414,5 @@ Singleton {
+         property real wallpaperSelectorItemPadding: 6
+     }
+ 
+-    syntaxHighlightingTheme: root.m3colors.darkmode ? "Monokai" : "ayu Light"
++    syntaxHighlightingTheme: root.m3colors.darkmode ? "Dracula" : "ayu Light"
+ }
+diff --git a/modules/common/functions/StringUtils.qml b/modules/common/functions/StringUtils.qml
+index 0839b53..2903c2b 100644
+--- a/modules/common/functions/StringUtils.qml
++++ b/modules/common/functions/StringUtils.qml
+@@ -51,7 +51,7 @@ Singleton {
+      * @returns {Array<{type: "text" | "think" | "code", content: string, lang?: string, completed?: boolean}>}
+      */
+     function splitMarkdownBlocks(markdown) {
+-        const regex = /```(\w+)?\n([\s\S]*?)```|<think>([\s\S]*?)<\/think>/g;
++        const regex = /```([\w+#.-]+)?\n([\s\S]*?)```|<think>([\s\S]*?)<\/think>/g;
+         /**
+          * @type {{type: "text" | "think" | "code"; content: string; lang: string | undefined; completed: boolean | undefined}[]}
+          */
+@@ -73,7 +73,7 @@ Singleton {
+                     result.push({
+                         type: "code",
+                         lang: match[1] || "",
+-                        content: match[2],
++                        content: match[2].replace(/\n$/, ""), // Otherwise every block ends in an empty numbered line
+                         completed: true
+                     });
+                 }
+diff --git a/modules/ii/sidebarLeft/aiChat/MessageCodeBlock.qml b/modules/ii/sidebarLeft/aiChat/MessageCodeBlock.qml
+index 8f6db8b..27ffff2 100644
+--- a/modules/ii/sidebarLeft/aiChat/MessageCodeBlock.qml
++++ b/modules/ii/sidebarLeft/aiChat/MessageCodeBlock.qml
+@@ -23,6 +23,34 @@ ColumnLayout {
+     property bool isPermissionCard: segmentLang.length > 0 && segmentLang === messageData?.permissionFence
+     property bool isCommandRequest: segmentLang === "command" || isPermissionCard
+     property var displayLang: isPermissionCard ? segmentLang.split("_")[1] : (isCommandRequest ? "bash" : segmentLang)
++    // Fences models often use that the highlighter doesn't know by name
++    readonly property var languageAliases: ({ "sh": "Bash", "shell": "Bash", "console": "Bash", "md": "Markdown", "php": "PHP/PHP", "ini": "INI Files" })
++    readonly property var definition: Repository.definitionForName(languageAliases[displayLang] ?? (displayLang || "plaintext"))
++    readonly property string languageLabel: definition.name === "None" ? Translation.tr("Text") : definition.name
++    readonly property bool isDiff: definition.name === "Diff"
++    readonly property int lineCount: codeTextArea.text.split("\n").length
++
++    // Measured from the real layout, so diff rows and numbers stay right on wrapped lines
++    property var lineRows: []
++    function measureLines() {
++        if (!root.isDiff && !root.isPermissionCard) {
++            root.lineRows = [];
++            return;
++        }
++        let offset = 0;
++        root.lineRows = codeTextArea.text.split("\n").map(line => {
++            const start = codeTextArea.positionToRectangle(offset);
++            const end = codeTextArea.positionToRectangle(offset + line.length);
++            offset += line.length + 1;
++            return { y: start.y, height: end.y + end.height - start.y, line: line };
++        });
++    }
++    function diffColor(line) {
++        if (line.startsWith("+") && !line.startsWith("+++")) return Qt.rgba(0.31, 0.98, 0.48, 0.14);
++        if (line.startsWith("-") && !line.startsWith("---")) return Qt.rgba(1, 0.33, 0.33, 0.16);
++        if (line.startsWith("@@")) return Qt.rgba(0.55, 0.91, 0.99, 0.10);
++        return "transparent";
++    }
+ 
+     property real codeBlockBackgroundRounding: Appearance.rounding.small
+     property real codeBlockHeaderPadding: 3
+@@ -58,7 +86,7 @@ ColumnLayout {
+                 font.pixelSize: Appearance.font.pixelSize.small
+                 font.weight: Font.DemiBold
+                 color: Appearance.colors.colOnLayer2
+-                text: root.displayLang ? Repository.definitionForName(root.displayLang).name : "plain"
++                text: `${root.languageLabel}  ·  ${root.lineCount === 1 ? Translation.tr("1 line") : Translation.tr("%1 lines").arg(root.lineCount)}`
+             }
+ 
+             Item { Layout.fillWidth: true }
+@@ -124,7 +152,7 @@ ColumnLayout {
+         spacing: codeBlockComponentSpacing
+ 
+         Rectangle { // Line numbers
+-            implicitWidth: 40
++            implicitWidth: String(root.lineCount).length * 9 + 20
+             implicitHeight: lineNumberColumnLayout.implicitHeight
+             Layout.fillHeight: true
+             Layout.fillWidth: false
+@@ -155,6 +183,9 @@ ColumnLayout {
+                         font.pixelSize: Appearance.font.pixelSize.small
+                         color: Appearance.colors.colSubtext
+                         horizontalAlignment: Text.AlignRight
++                        verticalAlignment: Text.AlignTop
++                        opacity: 0.65
++                        Layout.preferredHeight: root.lineRows[index]?.height ?? -1
+                         text: index + 1
+                     }
+                 }
+@@ -222,12 +253,29 @@ ColumnLayout {
+                         selectionColor: Appearance.colors.colSecondaryContainer
+                         // A permission card must show all of the command, not scroll it out of view
+                         wrapMode: root.isPermissionCard ? TextEdit.WrapAnywhere : TextEdit.NoWrap
+-                        width: root.isPermissionCard ? codeScrollView.width : implicitWidth
++                        width: root.isPermissionCard ? codeScrollView.width : Math.max(implicitWidth, codeScrollView.width)
++                        onContentHeightChanged: Qt.callLater(root.measureLines)
++                        onContentWidthChanged: Qt.callLater(root.measureLines)
++
++                        background: Item { // Full-width diff rows, as in an editor
++                            Repeater {
++                                model: root.isDiff ? root.lineRows : []
++                                Rectangle {
++                                    required property var modelData
++                                    x: 0
++                                    y: modelData.y
++                                    width: parent.width
++                                    height: modelData.height
++                                    color: root.diffColor(modelData.line)
++                                }
++                            }
++                        }
+                         color: messageData.thinking ? Appearance.colors.colSubtext : Appearance.colors.colOnLayer1
+ 
+                         text: segmentContent
+                         onTextChanged: {
+                             segmentContent = text
++                            Qt.callLater(root.measureLines)
+                         }
+ 
+                         Keys.onPressed: (event) => {
+@@ -247,7 +295,7 @@ ColumnLayout {
+                             id: highlighter
+                             textEdit: codeTextArea
+                             repository: Repository
+-                            definition: Repository.definitionForName(root.displayLang || "plaintext")
++                            definition: root.definition
+                             theme: Appearance.syntaxHighlightingTheme
+                         }
+                     }

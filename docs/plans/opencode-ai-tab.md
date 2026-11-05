@@ -17,7 +17,8 @@ edits, diffs and undo. Existing direct models (NVIDIA, Gemini) must keep working
 - Bind to localhost only. Keys come from the keyring, never from files.
 - Every tool waits for an Allow in the tab, except plain reads inside the project. `/tool none` turns tools off.
 - `SUPER + A` opens the stock left sidebar again (changed by the user 2026-11-04, ahead of stage 2).
-- Start folder is `~/dev`, not the home folder, which holds Drive, OneDrive and secrets.
+- Start folder is `~/.agents`, not `~/dev`, which holds important files, and not the home folder, which holds Drive,
+  OneDrive and secrets (changed by the user 2026-11-05).
 - The live config sets `"permission": {"*": "ask"}`, so the panel prompts too (decided 2026-11-04, after stage 0 found it allowed nearly everything).
 - Stage 2 allows file reads inside the project without a prompt, and asks for everything else, including `.env` files
   and anything outside the project (decided 2026-11-04). This narrows "nothing runs without an Allow" for reads only.
@@ -114,8 +115,8 @@ Chat history from sessions, diffs, undo through revert, and the welcome screen, 
 pill input and better code blocks from the earlier UI list.
 
 **Status:** done 2026-11-05 in patch 0015, except code blocks: `/history`, `/resume N`, `/diff`, `/undo`, a model menu on
-the model chip, a new welcome text, and a rounder input. Code blocks only gained a correct Diff header; the earlier
-UI list isn't written down anywhere, so ask the user what was meant.
+the model chip, a new welcome text, and a rounder input. "Better code blocks" means IDE-style display, with colours and
+line numbers. Built 2026-11-05 but not yet seen on screen or committed.
 
 ## Working rules learned the hard way
 
@@ -128,6 +129,8 @@ UI list isn't written down anywhere, so ask the user what was meant.
   bars (`hyprctl monitors` reserved top 80, not 40). Check `qs list --all`; `pgrep -x qs`
   misses `quickshell`. Kill the older PID.
 - **Reload check:** `Configuration Loaded` count in `qs -c ii log`. The watcher can lag 8s.
+- **Never hot reload while the screen may be locked.** `screenLocked` restarts as `false`, so the new shell drops the lock surface
+  and Hyprland shows its crashed lockscreen page. The screen locks after 5 idle minutes, so ask first if the user may be away.
 - **Escape closes the sidebar.** Anything typed next lands in the focused window. Check `hyprctl layers` before every
   keystroke when driving the tab, and never send Escape.
 - **`ydotool mousemove --absolute` doubles coordinates here.** Halve them, and check `hyprctl cursorpos` before

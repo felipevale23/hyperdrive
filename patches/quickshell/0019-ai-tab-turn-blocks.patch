@@ -1,0 +1,882 @@
+diff --git a/modules/common/functions/StringUtils.qml b/modules/common/functions/StringUtils.qml
+index 2903c2b..e90c0d6 100644
+--- a/modules/common/functions/StringUtils.qml
++++ b/modules/common/functions/StringUtils.qml
+@@ -45,6 +45,54 @@ Singleton {
+         .replace(/'/g, "'\\''");
+     }
+ 
++    /**
++     * Splits a message that may hold OpenCode's own blocks. Those are pulled out first, by their secret
++     * fences, so nothing a model writes around them can hide one, and the text between is parsed alone.
++     * Steps next to each other, thoughts and tools, become one activity block.
++     * @param { string } markdown
++     * @param { string } systemFence
++     * @param { string } liveFence The fence of the card still waiting for an answer
++     */
++    function splitMessageBlocks(markdown, systemFence, liveFence) {
++        if (!markdown) return [];
++        if (!systemFence) return root.splitMarkdownBlocks(markdown);
++        const fences = liveFence ? `${systemFence}|${liveFence}` : systemFence;
++        const regex = new RegExp("```(" + fences + ")\\n(.*)\\n```", "g");
++        const blocks = [];
++        let lastIndex = 0;
++        let match;
++        while ((match = regex.exec(markdown)) !== null) {
++            blocks.push(...root.splitMarkdownBlocks(markdown.slice(lastIndex, match.index)));
++            lastIndex = regex.lastIndex;
++            try {
++                const block = JSON.parse(match[2]);
++                blocks.push(Object.assign(block, { type: block.kind, live: match[1] === liveFence }));
++            } catch (e) {
++                console.log("[AI] Bad system block: ", e);
++            }
++        }
++        blocks.push(...root.splitMarkdownBlocks(markdown.slice(lastIndex)));
++        const result = [];
++        for (const block of blocks) {
++            if (block.type !== "think" && block.type !== "tool") {
++                result.push(block);
++                continue;
++            }
++            const last = result[result.length - 1];
++            if (last?.type === "activity") last.steps.push(block);
++            else result.push({ type: "activity", steps: [block] });
++        }
++        return result;
++    }
++
++    /**
++     * What a person would want to copy: the message without OpenCode's own blocks.
++     */
++    function withoutSystemBlocks(markdown, systemFence) {
++        if (!systemFence) return markdown;
++        return markdown.replace(new RegExp("```(" + systemFence + "|permission_\\w+)\\n.*\\n```", "g"), "").trim();
++    }
++
+     /**
+      * Splits markdown blocks into three different types: text, think, and code.
+      * @param { string } markdown
+diff --git a/modules/ii/sidebarLeft/AiChat.qml b/modules/ii/sidebarLeft/AiChat.qml
+index d0df410..517be50 100644
+--- a/modules/ii/sidebarLeft/AiChat.qml
++++ b/modules/ii/sidebarLeft/AiChat.qml
+@@ -53,6 +53,16 @@ Item {
+             description: Translation.tr("Switch the OpenCode agent: build or plan"),
+             execute: args => root.opencodeOnly(() => Ai.setOpencodeAgent(args[0]))
+         },
++        {
++            name: "approve",
++            description: Translation.tr("Approve what OpenCode is asking, once"),
++            execute: () => Ai.answerLiveCard("once")
++        },
++        {
++            name: "reject",
++            description: Translation.tr("Reject what OpenCode is asking"),
++            execute: () => Ai.answerLiveCard("reject")
++        },
+         {
+             name: "project",
+             description: Translation.tr("Choose the folder for a new OpenCode chat"),
+diff --git a/modules/ii/sidebarLeft/aiChat/AiMessage.qml b/modules/ii/sidebarLeft/aiChat/AiMessage.qml
+index 1308e59..b4fe045 100644
+--- a/modules/ii/sidebarLeft/aiChat/AiMessage.qml
++++ b/modules/ii/sidebarLeft/aiChat/AiMessage.qml
+@@ -16,6 +16,7 @@ Rectangle {
+     property real messagePadding: 4
+     property real contentSpacing: 2
+     readonly property bool isUser: messageData?.role === 'user'
++    readonly property bool isInterface: messageData?.role === 'interface'
+     readonly property real bubblePaddingX: 14
+     readonly property real bubblePaddingY: 9
+     // TextArea's own padding and document margins, which the text can't use
+@@ -29,7 +30,7 @@ Rectangle {
+     property bool renderMarkdown: true
+     property bool editing: false
+ 
+-    property list<var> messageBlocks: StringUtils.splitMarkdownBlocks(root.messageData?.content)
++    property list<var> messageBlocks: StringUtils.splitMessageBlocks(root.messageData?.content, root.messageData?.systemFence, root.messageData?.permissionFence)
+ 
+     anchors.left: parent?.left
+     anchors.right: parent?.right
+@@ -97,6 +98,16 @@ Rectangle {
+         color: Appearance.colors.colSecondaryContainer
+     }
+ 
++    Rectangle { // What the tab says itself, kept apart from what a model says
++        visible: root.isInterface
++        x: columnLayout.x + messageContentColumnLayout.x
++        y: columnLayout.y + messageContentColumnLayout.y
++        width: messageContentColumnLayout.width
++        height: messageContentColumnLayout.height
++        radius: Appearance.rounding.small
++        color: Appearance.colors.colLayer2
++    }
++
+     ColumnLayout { // Main layout of the whole thing
+         id: columnLayout
+ 
+@@ -158,6 +169,16 @@ Rectangle {
+                         segmentLang: modelData.lang
+                         messageData: root.messageData
+                     } }
++                    DelegateChoice { roleValue: "activity"; MessageActivityBlock {
++                        steps: modelData.steps
++                    } }
++                    DelegateChoice { roleValue: "card"; MessagePermissionBlock {
++                        block: modelData
++                        messageData: root.messageData
++                    } }
++                    DelegateChoice { roleValue: "note"; MessageNoteBlock {
++                        block: modelData
++                    } }
+                     DelegateChoice { roleValue: "think"; MessageThinkBlock {
+                         editing: root.editing
+                         renderMarkdown: root.renderMarkdown
+@@ -180,6 +201,19 @@ Rectangle {
+             }
+         }
+ 
++        StyledText { // What OpenCode is doing right now
++            visible: (root.messageData?.systemFence?.length ?? 0) > 0 && !(root.messageData?.done ?? true)
++                && root.messageBlocks.length > 0 && (root.messageData?.permissionFence?.length ?? 0) === 0
++            Layout.fillWidth: true
++            Layout.leftMargin: 10
++            Layout.topMargin: 4
++            textFormat: Text.PlainText
++            elide: Text.ElideRight
++            font.pixelSize: Appearance.font.pixelSize.small
++            color: Appearance.colors.colOnSurfaceVariant
++            text: root.messageData?.currentStep?.length > 0 ? `${root.messageData.currentStep}…` : Translation.tr("Working…")
++        }
++
+         Flow { // Annotations
+             visible: root.messageData?.annotationSources?.length > 0
+             spacing: 5
+@@ -339,7 +373,7 @@ Rectangle {
+                         buttonIcon: activated ? "inventory" : "content_copy"
+ 
+                         onClicked: {
+-                            Quickshell.clipboardText = root.messageData?.content
++                            Quickshell.clipboardText = StringUtils.withoutSystemBlocks(root.messageData?.content, root.messageData?.systemFence)
+                             copyButton.activated = true
+                             copyIconTimer.restart()
+                         }
+@@ -360,7 +394,7 @@ Rectangle {
+                     AiMessageControlButton {
+                         id: editButton
+                         activated: root.editing
+-                        enabled: root.messageData?.done ?? false
++                        enabled: (root.messageData?.done ?? false) && !root.messageData?.systemFence
+                         buttonIcon: "edit"
+                         onClicked: {
+                             root.editing = !root.editing
+diff --git a/modules/ii/sidebarLeft/aiChat/MessageActivityBlock.qml b/modules/ii/sidebarLeft/aiChat/MessageActivityBlock.qml
+new file mode 100644
+index 0000000..f9edfaf
+--- /dev/null
++++ b/modules/ii/sidebarLeft/aiChat/MessageActivityBlock.qml
+@@ -0,0 +1,120 @@
++pragma ComponentBehavior: Bound
++
++import qs.services
++import qs.modules.common
++import qs.modules.common.widgets
++import qs.modules.common.functions
++import QtQuick
++import QtQuick.Layouts
++
++/**
++ * What OpenCode did between two pieces of a reply: thoughts and tool steps, as one quiet row.
++ * Failures open by themselves. Plain text throughout, because targets come from the model.
++ */
++ColumnLayout {
++    id: root
++    property var steps: []
++    readonly property var tools: steps.filter(step => step.type === "tool")
++    readonly property int failed: tools.filter(step => !step.ok).length
++    property bool expanded: failed > 0
++
++    readonly property string summary: {
++        if (tools.length === 0) return Translation.tr("Thought");
++        if (failed > 0) return tools.length === 1 ? Translation.tr("%1: failed").arg(tools[0].text)
++            : Translation.tr("%1 steps, %2 failed").arg(tools.length).arg(failed);
++        if (tools.length === 1) return tools[0].text;
++        if (tools.every(step => step.name === "read")) return Translation.tr("Read %1 files").arg(tools.length);
++        if (tools.every(step => step.name === "edit")) return Translation.tr("Edited %1 files").arg(tools.length);
++        return Translation.tr("%1 steps").arg(tools.length);
++    }
++
++    function iconOf(step) {
++        if (step.type === "think") return "linked_services";
++        if (!step.ok) return "error";
++        switch (step.name) {
++        case "read": return "description";
++        case "edit":
++        case "write": return "edit_note";
++        case "shell": return "terminal";
++        case "grep":
++        case "glob":
++        case "websearch": return "search";
++        case "webfetch": return "public";
++        case "subagent": return "smart_toy";
++        }
++        return "build";
++    }
++
++    Layout.fillWidth: true
++    spacing: 0
++
++    RippleButton { // Summary, click to open
++        Layout.fillWidth: true
++        implicitHeight: 30
++        buttonRadius: Appearance.rounding.small
++        colBackgroundHover: Appearance.colors.colLayer2Hover
++        colRipple: Appearance.colors.colLayer2Active
++        onClicked: root.expanded = !root.expanded
++        Accessible.name: root.summary
++
++        contentItem: RowLayout {
++            spacing: 8
++            MaterialSymbol {
++                Layout.leftMargin: 3
++                text: root.failed > 0 ? "error" : root.iconOf(root.steps[root.steps.length - 1])
++                iconSize: Appearance.font.pixelSize.normal
++                color: root.failed > 0 ? Appearance.colors.colError : Appearance.colors.colOnSurfaceVariant
++            }
++            StyledText {
++                Layout.fillWidth: true
++                textFormat: Text.PlainText
++                elide: Text.ElideMiddle
++                font.pixelSize: Appearance.font.pixelSize.small
++                color: Appearance.colors.colOnSurfaceVariant
++                text: root.summary
++            }
++            MaterialSymbol {
++                Layout.rightMargin: 3
++                text: "keyboard_arrow_down"
++                iconSize: Appearance.font.pixelSize.normal
++                color: Appearance.colors.colOnSurfaceVariant
++                rotation: root.expanded ? 180 : 0
++            }
++        }
++    }
++
++    ColumnLayout { // Every step
++        visible: root.expanded
++        Layout.fillWidth: true
++        Layout.leftMargin: 10
++        Layout.rightMargin: 10
++        Layout.topMargin: 2
++        Layout.bottomMargin: 4
++        spacing: 4
++
++        Repeater {
++            model: root.steps
++            delegate: RowLayout {
++                id: stepRow
++                required property var modelData
++                Layout.fillWidth: true
++                spacing: 8
++                MaterialSymbol {
++                    Layout.alignment: Qt.AlignTop
++                    text: root.iconOf(stepRow.modelData)
++                    iconSize: Appearance.font.pixelSize.normal
++                    color: stepRow.modelData.type === "tool" && !stepRow.modelData.ok ? Appearance.colors.colError : Appearance.colors.colOnSurfaceVariant
++                }
++                StyledText {
++                    Layout.fillWidth: true
++                    textFormat: Text.PlainText
++                    wrapMode: Text.Wrap
++                    font.pixelSize: Appearance.font.pixelSize.small
++                    color: Appearance.colors.colOnSurfaceVariant
++                    text: stepRow.modelData.type === "think" ? stepRow.modelData.content.trim()
++                        : (stepRow.modelData.ok || !stepRow.modelData.error ? stepRow.modelData.text : `${stepRow.modelData.text}\n${stepRow.modelData.error}`)
++                }
++            }
++        }
++    }
++}
+diff --git a/modules/ii/sidebarLeft/aiChat/MessageCodeBlock.qml b/modules/ii/sidebarLeft/aiChat/MessageCodeBlock.qml
+index 27ffff2..60028f6 100644
+--- a/modules/ii/sidebarLeft/aiChat/MessageCodeBlock.qml
++++ b/modules/ii/sidebarLeft/aiChat/MessageCodeBlock.qml
+@@ -19,10 +19,9 @@ ColumnLayout {
+     property var segmentContent: ({})
+     property var segmentLang: "txt"
+     property var messageData: {}
+-    // A permission card's fence has a random name, so a model can't print its own Approve button
+-    property bool isPermissionCard: segmentLang.length > 0 && segmentLang === messageData?.permissionFence
+-    property bool isCommandRequest: segmentLang === "command" || isPermissionCard
+-    property var displayLang: isPermissionCard ? segmentLang.split("_")[1] : (isCommandRequest ? "bash" : segmentLang)
++    property bool bare: false // Inside a permission card: no title bar, and every line stays in view
++    property bool isCommandRequest: segmentLang === "command"
++    property var displayLang: isCommandRequest ? "bash" : segmentLang
+     // Fences models often use that the highlighter doesn't know by name
+     readonly property var languageAliases: ({ "sh": "Bash", "shell": "Bash", "console": "Bash", "md": "Markdown", "php": "PHP/PHP", "ini": "INI Files" })
+     readonly property var definition: Repository.definitionForName(languageAliases[displayLang] ?? (displayLang || "plaintext"))
+@@ -33,7 +32,7 @@ ColumnLayout {
+     // Measured from the real layout, so diff rows and numbers stay right on wrapped lines
+     property var lineRows: []
+     function measureLines() {
+-        if (!root.isDiff && !root.isPermissionCard) {
++        if (!root.isDiff && !root.bare) {
+             root.lineRows = [];
+             return;
+         }
+@@ -59,6 +58,7 @@ ColumnLayout {
+     spacing: codeBlockComponentSpacing
+ 
+     Rectangle { // Code background
++        visible: !root.bare
+         Layout.fillWidth: true
+         topLeftRadius: codeBlockBackgroundRounding
+         topRightRadius: codeBlockBackgroundRounding
+@@ -252,8 +252,8 @@ ColumnLayout {
+                         selectedTextColor: Appearance.m3colors.m3onSecondaryContainer
+                         selectionColor: Appearance.colors.colSecondaryContainer
+                         // A permission card must show all of the command, not scroll it out of view
+-                        wrapMode: root.isPermissionCard ? TextEdit.WrapAnywhere : TextEdit.NoWrap
+-                        width: root.isPermissionCard ? codeScrollView.width : Math.max(implicitWidth, codeScrollView.width)
++                        wrapMode: root.bare ? TextEdit.WrapAnywhere : TextEdit.NoWrap
++                        width: root.bare ? codeScrollView.width : Math.max(implicitWidth, codeScrollView.width)
+                         onContentHeightChanged: Qt.callLater(root.measureLines)
+                         onContentWidthChanged: Qt.callLater(root.measureLines)
+ 
+@@ -301,7 +301,7 @@ ColumnLayout {
+                     }
+                 }
+                 Loader {
+-                    active: root.isPermissionCard || (root.segmentLang === "command" && root.messageData.functionPending)
++                    active: root.segmentLang === "command" && root.messageData.functionPending
+                     visible: active
+                     Layout.fillWidth: true
+                     Layout.margins: 6
+diff --git a/modules/ii/sidebarLeft/aiChat/MessageNoteBlock.qml b/modules/ii/sidebarLeft/aiChat/MessageNoteBlock.qml
+new file mode 100644
+index 0000000..7c89f87
+--- /dev/null
++++ b/modules/ii/sidebarLeft/aiChat/MessageNoteBlock.qml
+@@ -0,0 +1,34 @@
++import qs.modules.common
++import qs.modules.common.widgets
++import QtQuick
++import QtQuick.Layouts
++
++/**
++ * A short line from the tab itself, inside a reply. Plain text, because file names come from the model.
++ */
++RowLayout {
++    id: root
++    property var block: ({})
++
++    Layout.fillWidth: true
++    Layout.topMargin: 4
++    Layout.bottomMargin: 4
++    Layout.leftMargin: 10
++    Layout.rightMargin: 10
++    spacing: 8
++
++    MaterialSymbol {
++        Layout.alignment: Qt.AlignTop
++        text: root.block.icon ?? "info"
++        iconSize: Appearance.font.pixelSize.normal
++        color: root.block.tone === "error" ? Appearance.colors.colError : Appearance.colors.colOnSurfaceVariant
++    }
++    StyledText {
++        Layout.fillWidth: true
++        textFormat: Text.PlainText
++        wrapMode: Text.Wrap
++        font.pixelSize: Appearance.font.pixelSize.small
++        color: Appearance.colors.colOnSurfaceVariant
++        text: root.block.text ?? ""
++    }
++}
+diff --git a/modules/ii/sidebarLeft/aiChat/MessagePermissionBlock.qml b/modules/ii/sidebarLeft/aiChat/MessagePermissionBlock.qml
+new file mode 100644
+index 0000000..9934498
+--- /dev/null
++++ b/modules/ii/sidebarLeft/aiChat/MessagePermissionBlock.qml
+@@ -0,0 +1,161 @@
++pragma ComponentBehavior: Bound
++
++import qs.services
++import qs.modules.common
++import qs.modules.common.widgets
++import QtQuick
++import QtQuick.Layouts
++
++/**
++ * Something OpenCode needs an answer to. A live card sits in a fence only this message knows, so a
++ * model can't print its own Approve button. Plain text throughout, because paths come from the model.
++ */
++Rectangle {
++    id: root
++    property var block: ({})
++    property var messageData: {}
++    readonly property bool live: block.live ?? false
++    readonly property bool allowed: block.state === "allowed"
++    readonly property bool hasDetail: (block.detail ?? "").length > 0
++    property bool detailShown: live
++
++    component AnswerButton: RippleButton {
++        id: answerButton
++        property alias label: answerLabel.text
++        property color colLabel
++        Layout.fillWidth: true
++        Layout.preferredWidth: 1
++        implicitHeight: 36
++        buttonRadius: Appearance.rounding.full
++        activeFocusOnTab: true
++        Keys.onReturnPressed: clicked()
++        Keys.onEnterPressed: clicked()
++        Accessible.name: answerLabel.text
++        contentItem: StyledText {
++            id: answerLabel
++            horizontalAlignment: Text.AlignHCenter
++            verticalAlignment: Text.AlignVCenter
++            font.pixelSize: Appearance.font.pixelSize.small
++            color: answerButton.colLabel
++        }
++        Rectangle { // Keyboard focus
++            anchors.fill: parent
++            radius: Appearance.rounding.full
++            color: "transparent"
++            border.width: answerButton.activeFocus ? 2 : 0
++            border.color: Appearance.colors.colOnLayer1
++        }
++    }
++
++    Layout.fillWidth: true
++    Layout.topMargin: 4
++    Layout.bottomMargin: 4
++    implicitHeight: cardColumn.implicitHeight + 12 * 2
++    radius: Appearance.rounding.normal
++    color: root.live ? Appearance.colors.colSurfaceContainerHighest : Appearance.colors.colLayer2
++
++    ColumnLayout {
++        id: cardColumn
++        anchors {
++            left: parent.left
++            right: parent.right
++            top: parent.top
++            margins: 12
++        }
++        spacing: 8
++
++        RowLayout { // Who asks, and for what
++            Layout.fillWidth: true
++            spacing: 10
++            MaterialSymbol {
++                Layout.alignment: Qt.AlignTop
++                text: root.live ? "shield_question" : (root.allowed ? "check_circle" : "block")
++                iconSize: Appearance.font.pixelSize.larger
++                color: root.live ? Appearance.colors.colPrimary : (root.allowed ? Appearance.colors.colOnSurfaceVariant : Appearance.colors.colError)
++            }
++            ColumnLayout {
++                Layout.fillWidth: true
++                spacing: 2
++                StyledText {
++                    Layout.fillWidth: true
++                    textFormat: Text.PlainText
++                    wrapMode: Text.WrapAnywhere
++                    font.pixelSize: Appearance.font.pixelSize.small
++                    font.weight: Font.DemiBold
++                    color: Appearance.colors.colOnLayer2
++                    text: root.block.title ?? ""
++                }
++                StyledText { // Why it asks, or how it ended
++                    visible: text.length > 0
++                    Layout.fillWidth: true
++                    textFormat: Text.PlainText
++                    wrapMode: Text.Wrap
++                    font.pixelSize: Appearance.font.pixelSize.smaller
++                    color: Appearance.colors.colOnSurfaceVariant
++                    text: root.live ? (root.block.reason ?? "") : (root.block.outcome ?? "")
++                }
++            }
++            RippleButton { // An answered card keeps its detail one click away
++                visible: !root.live && root.hasDetail
++                Layout.alignment: Qt.AlignTop
++                implicitWidth: 26
++                implicitHeight: 26
++                buttonRadius: Appearance.rounding.full
++                colBackgroundHover: Appearance.colors.colLayer2Hover
++                colRipple: Appearance.colors.colLayer2Active
++                onClicked: root.detailShown = !root.detailShown
++                Accessible.name: Translation.tr("Show details")
++                contentItem: MaterialSymbol {
++                    horizontalAlignment: Text.AlignHCenter
++                    verticalAlignment: Text.AlignVCenter
++                    text: "keyboard_arrow_down"
++                    iconSize: Appearance.font.pixelSize.normal
++                    color: Appearance.colors.colOnSurfaceVariant
++                    rotation: root.detailShown ? 180 : 0
++                }
++            }
++        }
++
++        Loader { // The exact command, diff or path
++            active: root.hasDetail && root.detailShown
++            visible: active
++            Layout.fillWidth: true
++            sourceComponent: MessageCodeBlock {
++                bare: true
++                segmentContent: root.block.detail
++                segmentLang: root.block.lang ?? "txt"
++                messageData: root.messageData
++            }
++        }
++
++        StyledText { // What Approve does
++            visible: root.live
++            Layout.fillWidth: true
++            textFormat: Text.PlainText
++            wrapMode: Text.Wrap
++            font.pixelSize: Appearance.font.pixelSize.smaller
++            color: Appearance.colors.colOnSurfaceVariant
++            text: root.block.effect ?? ""
++        }
++
++        RowLayout { // Same size, and neither is a default
++            visible: root.live
++            Layout.fillWidth: true
++            spacing: 8
++            AnswerButton {
++                label: Translation.tr("Reject")
++                colLabel: Appearance.colors.colOnLayer2
++                colBackground: Appearance.colors.colLayer3
++                colBackgroundHover: Appearance.colors.colLayer3Hover
++                colRipple: Appearance.colors.colLayer3Active
++                onClicked: Ai.rejectCommand(root.messageData)
++            }
++            AnswerButton {
++                toggled: true
++                label: Translation.tr("Approve")
++                colLabel: Appearance.colors.colOnPrimary
++                onClicked: Ai.approveCommand(root.messageData)
++            }
++        }
++    }
++}
+diff --git a/services/Ai.qml b/services/Ai.qml
+index e6daf67..a5f68e9 100644
+--- a/services/Ai.qml
++++ b/services/Ai.qml
+@@ -1023,6 +1023,13 @@ Singleton {
+         }
+     }
+ 
++    // /approve and /reject, for the keyboard. Only ever from text the user typed
++    function answerLiveCard(answer) {
++        const id = root.messageIDs.find(messageId => root.messageByID[messageId].permissionFence.length > 0);
++        if (id === undefined) root.addMessage(Translation.tr("Nothing is waiting for an answer"), root.interfaceRole);
++        else root.answerPermission(root.messageByID[id], answer);
++    }
++
+     function rejectCommand(message: AiMessageData) {
+         if (message.permissionFence.length > 0) {
+             root.answerPermission(message, "reject");
+@@ -1110,6 +1117,7 @@ Singleton {
+             return ({
+                 "role": message.role,
+                 "rawContent": message.rawContent,
++                "systemFence": message.systemFence,
+                 "fileMimeType": message.fileMimeType,
+                 "fileUri": message.fileUri,
+                 "localFilePath": message.localFilePath,
+@@ -1166,6 +1174,7 @@ Singleton {
+                     "role": message.role,
+                     "rawContent": message.rawContent,
+                     "content": message.rawContent,
++                    "systemFence": message.systemFence ?? "",
+                     "fileMimeType": message.fileMimeType,
+                     "fileUri": message.fileUri,
+                     "localFilePath": message.localFilePath,
+diff --git a/services/ai/AiMessageData.qml b/services/ai/AiMessageData.qml
+index cf1519a..c4caac7 100644
+--- a/services/ai/AiMessageData.qml
++++ b/services/ai/AiMessageData.qml
+@@ -21,5 +21,7 @@ QtObject {
+     property string functionResponse
+     property bool functionPending: false
+     property string permissionFence // Name of the code fence holding a live OpenCode permission card
++    property string systemFence // Random fence for what OpenCode's tab says itself, so a model can't print the same thing
++    property string currentStep // What OpenCode is doing right now
+     property bool visibleToUser: true
+ }
+diff --git a/services/ai/OpenCodeApiStrategy.qml b/services/ai/OpenCodeApiStrategy.qml
+index b221364..2259caf 100644
+--- a/services/ai/OpenCodeApiStrategy.qml
++++ b/services/ai/OpenCodeApiStrategy.qml
+@@ -4,8 +4,8 @@ import QtQuick
+  * Talks to OpenCode through the opencode-tab helper, which prints one JSON event per line.
+  * OpenCode keeps the conversation in a session, so only the newest message is sent.
+  * The helper checks the session's permission rules before every message. Requests show up
+- * here as cards, one at a time. A card's fence has a random name that only this message
+- * knows, because the model can write anything into the same text.
++ * here as cards, one at a time. Cards, tool steps and notes are JSON in a fence with a random
++ * name that only this message knows, because the model can write anything into the same text.
+  */
+ ApiStrategy {
+     property string helperPath: ""
+@@ -22,7 +22,7 @@ ApiStrategy {
+     property string activeSession: "" // Subagents ask from their own sessions
+     property string activeRequest: ""
+     property string activeFence: ""
+-    property string activeLang: ""
++    property var activeCard: ({})
+     property var queuedRequests: []
+ 
+     function buildEndpoint(model: AiModel): string {
+@@ -60,6 +60,33 @@ ApiStrategy {
+         message.rawContent += text;
+     }
+ 
++    function randomName() {
++        return `${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
++    }
++
++    function systemFenceOf(message) {
++        if (message.systemFence.length === 0) message.systemFence = `system_${randomName()}`;
++        return message.systemFence;
++    }
++
++    // One line of JSON, and no backticks, so the block can't end early
++    function encoded(block) {
++        return JSON.stringify(block).split("`").join("\\u0060");
++    }
++
++    function fenced(fence, block) {
++        return "```" + fence + "\n" + encoded(block) + "\n```";
++    }
++
++    function addBlock(message, block, fence) {
++        closeOpenFence(message);
++        add(message, `\n\n${fenced(fence ?? systemFenceOf(message), block)}\n\n`);
++    }
++
++    function addNote(message, icon, text, tone) {
++        addBlock(message, { "kind": "note", "icon": icon, "text": text, "tone": tone ?? "" });
++    }
++
+     function endReasoning(message) {
+         if (!isReasoning) return;
+         isReasoning = false;
+@@ -70,13 +97,13 @@ ApiStrategy {
+         if ((message.content.split("```").length - 1) % 2 === 1) add(message, "\n```\n");
+     }
+ 
+-    function describe(action) {
++    function describe(action, target) {
+         switch (action) {
+         case "shell": return qsTr("run a command");
+-        case "edit": return qsTr("edit a file");
+-        case "write": return qsTr("write a file");
+-        case "read": return qsTr("read a protected file");
+-        case "external_directory": return qsTr("use something outside the project");
++        case "edit": return target.length > 0 ? qsTr("edit %1").arg(target) : qsTr("edit files");
++        case "write": return target.length > 0 ? qsTr("write %1").arg(target) : qsTr("write files");
++        case "read": return target.length > 0 ? qsTr("read %1").arg(target) : qsTr("read protected files");
++        case "external_directory": return qsTr("reach outside the project");
+         case "webfetch": return qsTr("fetch a web page");
+         case "websearch": return qsTr("search the web");
+         case "grep":
+@@ -86,50 +113,100 @@ ApiStrategy {
+         return action;
+     }
+ 
++    function reasonFor(action) {
++        switch (action) {
++        case "read": return qsTr("It's a private file, or a link out of the project.");
++        case "external_directory": return qsTr("It's outside this chat's folder.");
++        case "shell": return qsTr("A command can change anything your account can.");
++        case "webfetch":
++        case "websearch": return qsTr("What it finds goes to the model.");
++        case "grep":
++        case "glob": return qsTr("A search can reach private files.");
++        case "subagent": return qsTr("The subagent still asks before each action.");
++        }
++        return "";
++    }
++
++    function effectOf(action) {
++        if (action === "shell") return qsTr("Approve runs this once. /undo can't reverse a command.");
++        if (action === "edit" || action === "write") return qsTr("Approve runs this once. /undo restores the file.");
++        return qsTr("Approve runs this once.");
++    }
++
++    // A card must show everything it's asking about: what the title doesn't hold goes in the detail
++    function cardFor(request) {
++        const resources = request.resources ?? [];
++        const named = ["edit", "write", "read"].includes(request.action) && resources.length === 1 && !resources[0].includes("\n");
++        const extra = request.patch?.length > 0 ? request.patch : (request.detail ?? "");
++        const body = [named ? "" : resources.join("\n"), extra].filter(part => part.length > 0).join("\n");
++        return {
++            "kind": "card",
++            "title": qsTr("%1 wants to %2").arg(request.subagent ? qsTr("A subagent") : "OpenCode").arg(describe(request.action, named ? resources[0] : "")),
++            "reason": reasonFor(request.action),
++            "effect": effectOf(request.action),
++            "lang": request.patch?.length > 0 ? "diff" : (request.action === "shell" ? "bash" : (request.detail?.length > 0 ? "json" : "txt")),
++            "detail": body,
++            "state": "pending",
++            "outcome": "",
++        };
++    }
++
++    function stepText(event, running) {
++        const target = event.target ?? "";
++        const verbs = {
++            "read": running ? qsTr("Reading") : qsTr("Read"),
++            "edit": running ? qsTr("Editing") : qsTr("Edited"),
++            "write": running ? qsTr("Writing") : qsTr("Wrote"),
++            "shell": running ? qsTr("Running") : qsTr("Ran"),
++            "grep": running ? qsTr("Searching for") : qsTr("Searched for"),
++            "glob": running ? qsTr("Finding") : qsTr("Found"),
++            "webfetch": running ? qsTr("Fetching") : qsTr("Fetched"),
++            "websearch": running ? qsTr("Searching the web for") : qsTr("Searched the web for"),
++            "subagent": running ? qsTr("Subagent working on") : qsTr("Subagent finished"),
++        };
++        const text = `${verbs[event.name] ?? event.name} ${target}`.trim();
++        return event.subagent ? qsTr("Subagent: %1").arg(text) : text;
++    }
++
+     function showNextRequest(message) {
+         if (activeRequest.length > 0 || queuedRequests.length === 0) return;
+         const request = queuedRequests[0];
+         queuedRequests = queuedRequests.slice(1);
+         endReasoning(message);
+         closeOpenFence(message);
+-        const resources = (request.resources ?? []).join("\n");
+-        const details = request.patch?.length > 0 ? request.patch : (request.detail ?? "");
+-        const body = details.length > 0 ? `${resources}\n${details}` : resources;
+         activeRequest = request.id;
+         activeSession = request.session ?? sessionId;
+-        activeLang = request.patch?.length > 0 ? "diff" : (request.action === "shell" ? "bash" : (request.detail?.length > 0 ? "json" : "markdown"));
+-        activeFence = `permission_${activeLang}_${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+-        // A fence inside the body would end the card early and hide the rest of it
+-        const shown = body.split("```").join("`\u200b`\u200b`");
+-        const who = request.subagent ? qsTr("A subagent") : "OpenCode";
+-        add(message, `\n\n${qsTr("%1 wants to %2:").arg(who).arg(describe(request.action))}\n\n\`\`\`${activeFence}\n${shown}\n\`\`\`\n`);
++        activeFence = `permission_${randomName()}`;
++        activeCard = cardFor(request);
++        message.currentStep = "";
++        addBlock(message, activeCard, activeFence);
+         message.permissionFence = activeFence;
+     }
+ 
+-    function closeCard(message, outcome) {
+-        const opening = "```" + activeFence + "\n";
+-        const opened = "```" + activeLang + "\n";
+-        message.content = message.content.replace(opening, opened);
+-        message.rawContent = message.rawContent.replace(opening, opened);
++    function closeCard(message, state, outcome) {
++        const live = fenced(activeFence, activeCard);
++        const answered = fenced(systemFenceOf(message), Object.assign({}, activeCard, { "state": state, "outcome": outcome }));
++        message.content = message.content.split(live).join(answered);
++        message.rawContent = message.rawContent.split(live).join(answered);
+         message.permissionFence = "";
+         activeRequest = "";
+         activeFence = "";
+-        add(message, `\n_${outcome}_\n\n`);
+     }
+ 
+     function clearRequests(message) {
+         queuedRequests = [];
+         if (activeRequest.length > 0) {
+             turnExplained = true;
+-            closeCard(message, qsTr("Denied: the turn ended."));
++            closeCard(message, "denied", qsTr("Denied: the turn ended."));
+         }
+     }
+ 
+     function parseResponseLine(line, message) {
+         const event = JSON.parse(line);
++        systemFenceOf(message);
+         if (fileSkipped) {
+             fileSkipped = false;
+-            add(message, `_${qsTr("The attached file was not sent: OpenCode models do not take attachments here yet.")}_\n\n`);
++            addNote(message, "attach_file_off", qsTr("The attached file was not sent: OpenCode models do not take attachments here yet."));
+         }
+         switch (event.type) {
+         case "session":
+@@ -148,8 +225,8 @@ ApiStrategy {
+             add(message, event.delta);
+             return {};
+         case "attached":
+-            if (event.files.length > 0) add(message, `_${qsTr("Attached: %1").arg(event.files.join(", ").split("_").join("\\_"))}_\n\n`);
+-            if (event.refused.length > 0) add(message, `**${qsTr("Not attached, outside the project or a secret file")}**: ${event.refused.join(", ").split("_").join("\\_")}\n\n`);
++            if (event.files.length > 0) addNote(message, "attach_file", qsTr("Attached: %1").arg(event.files.join(", ")));
++            if (event.refused.length > 0) addNote(message, "block", qsTr("Not attached, outside the project or a private file: %1").arg(event.refused.join(", ")), "error");
+             return {};
+         case "permission":
+             queuedRequests = [...queuedRequests, event];
+@@ -159,20 +236,21 @@ ApiStrategy {
+             const allowed = event.reply === "once";
+             if (!allowed) turnExplained = true;
+             if (event.id === activeRequest) {
+-                closeCard(message, allowed ? qsTr("Allowed") : (event.timeout ? qsTr("Denied: no answer in time") : qsTr("Denied")));
++                closeCard(message, allowed ? "allowed" : "denied", allowed ? qsTr("Allowed") : (event.timeout ? qsTr("Denied: no answer in time") : qsTr("Denied")));
+             } else {
+                 queuedRequests = queuedRequests.filter(request => request.id !== event.id);
+             }
+             showNextRequest(message);
+             return {};
+         }
++        case "step":
++            endReasoning(message);
++            message.currentStep = stepText(event, true);
++            return {};
+         case "tool":
+             endReasoning(message);
+-            if (!event.denied) {
+-                const name = event.subagent ? `subagent ${event.name}` : event.name;
+-                const step = event.target.length > 0 ? `${name}: ${event.target}` : name;
+-                add(message, `\n\n\`${step.split("`").join("'")}\`${event.ok ? "" : ` _${qsTr("failed")}_`}\n\n`);
+-            }
++            message.currentStep = "";
++            if (!event.denied) addBlock(message, { "kind": "tool", "name": event.name, "text": stepText(event, false), "ok": event.ok, "error": event.error ?? "" });
+             return {};
+         case "usage": {
+             const input = event.tokens?.input ?? -1;
+@@ -180,27 +258,31 @@ ApiStrategy {
+             return { tokenUsage: { input: input, output: output, total: input + output } };
+         }
+         case "succeeded":
+-            clearRequests(message);
+-            endReasoning(message);
+-            if (!hasText) add(message, `_${qsTr("The model finished without writing a reply.")}_`);
++            finishTurn(message);
++            if (!hasText) addNote(message, "chat_error", qsTr("The model finished without writing a reply."));
+             return { finished: true };
+         case "interrupted":
+-            clearRequests(message);
+-            endReasoning(message);
+-            if (!hasText && !turnExplained) add(message, `_${qsTr("Stopped.")}_`);
++            finishTurn(message);
++            if (!hasText && !turnExplained) addNote(message, "stop_circle", qsTr("Stopped."));
+             return { finished: true };
+         case "failed":
+-            clearRequests(message);
+-            endReasoning(message);
+-            add(message, `**${qsTr("Error")}**: ${event.error}`);
++            finishTurn(message);
++            addNote(message, "error", qsTr("Error: %1").arg(event.error), "error");
+             return { finished: true };
+         }
+         return {};
+     }
+ 
++    function finishTurn(message) {
++        clearRequests(message);
++        endReasoning(message);
++        message.currentStep = "";
++    }
++
+     // Runs when the helper exits, which is the only sign of a stop button press
+     function onRequestFinished(message) {
+         clearRequests(message);
++        message.currentStep = "";
+         return {};
+     }
+ 

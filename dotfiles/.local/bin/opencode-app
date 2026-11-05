@@ -3,7 +3,7 @@
 # while the window is open, on localhost, signed in through a one-time link. Keys
 # come from the keyring so they never sit in a file.
 set -eu
-FOLDER="$HOME/dev"
+FOLDER="$HOME/.agents"
 PROFILE="$HOME/.local/share/opencode-app/chrome"
 
 stop_server() {
