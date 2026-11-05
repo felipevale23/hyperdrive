@@ -18,6 +18,9 @@ edits, diffs and undo. Existing direct models (NVIDIA, Gemini) must keep working
 - Tools stay disabled in the tab until Allow/Deny prompts work (stage 2).
 - `SUPER + A` stays on the OpenCode panel until stage 2 is done, then returns to the sidebar.
 - Start folder is `~/dev`, not the home folder, which holds Drive, OneDrive and secrets.
+- The live config sets `"permission": {"*": "ask"}`, so the panel prompts too (decided 2026-11-04, after stage 0 found it allowed nearly everything).
+- Stage 2 allows file reads inside the project without a prompt, and asks for everything else, including `.env` files
+  and anything outside the project (decided 2026-11-04). This narrows "nothing runs without an Allow" for reads only.
 
 ## Current state
 
@@ -38,18 +41,22 @@ Keys: `secret-tool lookup application illogical-impulse`, JSON at `.apiKeys`. Ne
 
 Spec: `GET /openapi.json` on a running server, 117 paths. Save it and read it; don't guess bodies.
 
-- Server: `opencode serve --hostname 127.0.0.1 --port 4096`. Password via `OPENCODE_SERVER_PASSWORD`,
-  sent as Basic auth with user `opencode`.
-- Any CLI call auto-starts `opencode serve --service`, seen on port 49374. Check for strays.
-- `/api/*` returns 401 without auth. Other paths such as `/session` are web app HTML, not data.
+Tested examples, event formats and permission behaviour are in `opencode-api-stage0.md`.
+
+- Server: `opencode serve --hostname 127.0.0.1 --port 0`, which picks a free port and prints it.
+  Password via `OPENCODE_SERVER_PASSWORD`, sent as Basic auth with user `opencode`.
+- CLI calls that need a server, such as `session list`, auto-start `opencode serve --service` on port 49374. Check for strays.
+- `/api/*` and `/openapi.json` return 401 without auth. Other paths such as `/session` are web app HTML, not data.
 - Sessions: `GET,POST /api/session`, `GET,PATCH,DELETE /api/session/{id}`.
 - Send: `POST /api/session/{id}/prompt` (`text`, `files`, `agents`, ...).
 - Messages: `GET /api/session/{id}/message`, `.../message/{messageID}`.
-- Live updates: `GET /api/event`. Not yet tested; confirm the format first.
+- Live updates: `GET /api/event`, SSE `data:` lines for the whole server. Filter by `data.sessionID`.
 - Model: `POST /api/session/{id}/model`, plus `GET /api/model`, `/api/model/default`, `/api/provider`.
 - Stop: `POST /api/session/{id}/interrupt`.
 - Permissions: `GET /api/permission/request`, `GET,POST /api/session/{id}/permission`,
-  `POST /api/session/{id}/permission/{requestID}/reply`.
+  `POST /api/session/{id}/permission/{requestID}/reply` with `decision` `once`, `always` or `reject`.
+  The shell action is named `shell`, not `bash`.
+- Session `permissions` rules override the config. Without them the normal config allows nearly everything.
 - Diff and undo: `GET /api/session/{id}/diff`, `POST .../revert/stage`, `.../revert/commit`, `DELETE .../revert`.
 - Pairing: `POST /api/pair`, `GET /auth/connect/{code}`. Links are one-time, 5 minutes.
 - Paths under `/api/experimental` may change. Avoid them.
@@ -72,21 +79,25 @@ simplest, because it needs no pairing.
 
 **Done when** every stage 1 and 2 call has a recorded example.
 
+**Status:** finished 2026-11-04, awaiting review. Record: `opencode-api-stage0.md`, including what was not tested.
+
 ### Stage 1: basic chat through OpenCode
 Add an OpenCode model option beside the current ones. Start the server on demand when it is
 chosen and stop it when the shell or tab closes. Stream text with `curl --no-buffer` into a
 `SplitParser`, as `Ai.qml` already does. Support model switching and a real stop button.
-**Tools off**, enforced on the server, not only hidden in the UI.
+**Tools off**, enforced on the server by a `deny` rule on each session, not only hidden in the UI.
+Check the rule in the create response before sending a prompt.
 
 **Done when** a message streams into the existing bubbles, stop works, and no process is
 left behind.
 
 ### Stage 2: safety and tools
 Show Allow/Deny in the chat for every permission request, with the exact command or file.
-Deny on timeout or error. Show tool steps such as "Reading file" and edits. Then move
+Deny on timeout or error, from the client, since the server does not expire requests. Show tool steps such as "Reading file" and edits. Then move
 `SUPER + A` back to the sidebar and retire the panel.
 
-**Done when** nothing runs without an explicit Allow, proven by a denied edit changing nothing.
+**Done when** nothing but project reads runs without an explicit Allow, proven by a denied edit changing nothing
+and by a read outside the project prompting.
 
 ### Stage 3: extras
 Chat history from sessions, diffs, undo through revert, and the welcome screen, model menu,
