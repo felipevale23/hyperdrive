@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=OpenCode
+GenericName=AI Assistant
+Comment=Chat with an AI coding agent
+Exec=sh -c '"$HOME/.local/bin/opencode-app"'
+Icon=utilities-terminal
+Terminal=false
+Categories=Development;Utility;

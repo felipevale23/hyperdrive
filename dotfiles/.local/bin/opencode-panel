@@ -1,0 +1,28 @@
+#!/bin/sh
+# SUPER + A: shows or hides the OpenCode panel, starting it the first time.
+# Closing the window stops its server (see opencode-app).
+set -eu
+exec 9>"${XDG_RUNTIME_DIR:-/tmp}/opencode-panel.lock"
+flock -n 9 || exit 0  # still starting from an earlier press
+
+is_open() {
+    hyprctl clients -j | jq -e 'any(.[]; .class | startswith("chrome-127.0.0.1"))' >/dev/null
+}
+
+toggle() {
+    hyprctl dispatch 'hl.dsp.workspace.toggle_special("opencode")' >/dev/null
+}
+
+if is_open; then
+    toggle
+    exit 0
+fi
+
+setsid -f "$HOME/.local/bin/opencode-app" 9>&- >/dev/null 2>&1
+tries=0
+until is_open; do
+    tries=$((tries + 1))
+    [ "$tries" -lt 80 ] || exit 1
+    sleep 0.25
+done
+toggle

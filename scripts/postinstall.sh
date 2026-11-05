@@ -121,7 +121,7 @@ msg "extra apps (KDE utils, Dolphin, Konsole, KDE Connect)"
 sudo pacman -S --needed --noconfirm \
     xdg-utils \
     dolphin dolphin-plugins ark kio-extras kdegraphics-thumbnailers \
-    konsole kcalc isoimagewriter discover partitionmanager khelpcenter \
+    konsole kcalc isoimagewriter discover partitionmanager khelpcenter opencode python-numpy \
     kdeconnect sshfs \
     python-gobject   # ~/.local/bin/appmenu (global app menu in the top bar)
 
@@ -219,6 +219,13 @@ gsettings set org.gnome.desktop.wm.preferences button-layout 'appmenu:' || true
 # Steam's buttons and menu row; skipped if it hasn't run yet. Its menus are in
 # the top bar through appmenu.
 "$HOME/.local/bin/steam-hide-window-buttons" || true
+# Dracula purple cursor, built from Bibata instead of stored in the repo
+if "$HOME/.local/bin/make-dracula-cursor"; then
+    gsettings set org.gnome.desktop.interface cursor-theme Bibata-Modern-Dracula || true
+    sed -i 's/^gtk-cursor-theme-name=.*/gtk-cursor-theme-name=Bibata-Modern-Dracula/' \
+        "$HOME/.config/gtk-3.0/settings.ini" "$HOME/.config/gtk-4.0/settings.ini" || true
+    kwriteconfig6 --file kcminputrc --group Mouse --key cursorTheme Bibata-Modern-Dracula || true
+fi
 # keep Konsole on the dotfiles' Kitty colorscheme: kde-material-you-colors
 # otherwise rewrites the profile's ColorScheme on every wallpaper change
 KMYC_CONF="$HOME/.config/kde-material-you-colors/config.conf"

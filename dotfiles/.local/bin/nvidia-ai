@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""NVIDIA models that aren't chat models, using the key from the keyring.
+
+  nvidia-ai image "a purple cube"   creates an image in ~/Pictures/nvidia-ai
+  nvidia-ai parse page.png          prints the text found in an image
+"""
+import base64, json, mimetypes, os, subprocess, sys, time, urllib.error, urllib.request
+
+IMAGE_URL = "https://ai.api.nvidia.com/v1/genai/black-forest-labs/flux.1-dev"
+CHAT_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+VISION_MODEL = "nvidia/nemotron-3.5-super-vl-120b-a12b"
+
+
+def api_key():
+    keyring = subprocess.run(["secret-tool", "lookup", "application", "illogical-impulse"],
+                             capture_output=True, text=True).stdout
+    key = json.loads(keyring or "{}").get("apiKeys", {}).get("nvidia")
+    if not key:
+        sys.exit("No NVIDIA key in the keyring. Set it with /key in the AI tab.")
+    return key
+
+
+def post(url, body):
+    request = urllib.request.Request(url, json.dumps(body).encode(), {
+        "Content-Type": "application/json", "Accept": "application/json",
+        "Authorization": "Bearer " + api_key()})
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        sys.exit(f"NVIDIA returned {error.code}: {error.read()[:300].decode(errors='replace')}")
+
+
+def image(prompt):
+    result = post(IMAGE_URL, {"prompt": prompt, "mode": "base", "cfg_scale": 3.5,
+                              "steps": 30, "seed": 0, "width": 1024, "height": 1024})
+    folder = os.path.expanduser("~/Pictures/nvidia-ai")
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, time.strftime("%Y%m%d-%H%M%S") + ".jpg")
+    with open(path, "wb") as out:
+        out.write(base64.b64decode(result["artifacts"][0]["base64"]))
+    print(path)
+
+
+def parse(path):
+    kind = mimetypes.guess_type(path)[0] or "image/png"
+    data = base64.b64encode(open(path, "rb").read()).decode()
+    result = post(CHAT_URL, {"model": VISION_MODEL, "max_tokens": 4096, "messages": [{
+        "role": "user", "content": [
+            {"type": "text", "text": "Extract all the text in this image exactly, as Markdown. "
+                                     "Keep tables and headings. Reply with only the text."},
+            {"type": "image_url", "image_url": {"url": f"data:{kind};base64,{data}"}}]}]})
+    print(result["choices"][0]["message"]["content"])
+
+
+if len(sys.argv) != 3 or sys.argv[1] not in ("image", "parse"):
+    sys.exit(__doc__)
+{"image": image, "parse": parse}[sys.argv[1]](sys.argv[2])

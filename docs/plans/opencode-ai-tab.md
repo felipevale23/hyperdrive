@@ -1,0 +1,126 @@
+# Plan: OpenCode as the engine of the AI tab
+
+Written 2026-11-04. Start here in a fresh session. Check every fact below against the
+live system before relying on it, since versions and files change.
+
+## Goal
+
+Keep the Quickshell AI tab (left sidebar) as the interface and use OpenCode as the engine
+behind it. The user wants their own UI with OpenCode's features: sessions, tools, file
+edits, diffs and undo. Existing direct models (NVIDIA, Gemini) must keep working.
+
+## Decisions already made
+
+- Build in stages, each usable on its own, on branch `opencode-ai-tab` in `~/dev/sh/hyperdrive`, not `main`.
+- OpenCode runs **on demand** only. No service that starts at login: the user chose this,
+  and auto mode blocked one anyway.
+- Bind to localhost only. Keys come from the keyring, never from files.
+- Tools stay disabled in the tab until Allow/Deny prompts work (stage 2).
+- `SUPER + A` stays on the OpenCode panel until stage 2 is done, then returns to the sidebar.
+- Start folder is `~/dev`, not the home folder, which holds Drive, OneDrive and secrets.
+
+## Current state
+
+| Piece | Where | Notes |
+|---|---|---|
+| OpenCode 2.0.24 | package `opencode`, repo `extra`, MIT | v2 has no `web` command |
+| Config | `~/.config/opencode/opencode.json` | NVIDIA provider, `{env:NVIDIA_API_KEY}`, default Mistral Large 4 |
+| Launcher | `~/.local/bin/opencode-app` | exports keys, `opencode pair`, Chrome `--app`, stops service on close |
+| Panel | `~/.local/bin/opencode-panel` | toggles `special:opencode` |
+| Rules and key | `~/.config/hypr/custom/rules.lua`, `custom/keybinds.lua` | merged by section in the repo copies, which differ from live |
+| AI tab | `~/.config/quickshell/ii/modules/ii/sidebarLeft/`, `services/Ai.qml` | in patch 0013 |
+| Provider code | `services/ai/*ApiStrategy.qml` | one strategy per API format |
+| Patches | `patches/quickshell/0001`-`0013` | applied in order on `END4_REF` |
+
+Keys: `secret-tool lookup application illogical-impulse`, JSON at `.apiKeys`. Never print them.
+
+## OpenCode API facts (v2.0.24)
+
+Spec: `GET /openapi.json` on a running server, 117 paths. Save it and read it; don't guess bodies.
+
+- Server: `opencode serve --hostname 127.0.0.1 --port 4096`. Password via `OPENCODE_SERVER_PASSWORD`,
+  sent as Basic auth with user `opencode`.
+- Any CLI call auto-starts `opencode serve --service`, seen on port 49374. Check for strays.
+- `/api/*` returns 401 without auth. Other paths such as `/session` are web app HTML, not data.
+- Sessions: `GET,POST /api/session`, `GET,PATCH,DELETE /api/session/{id}`.
+- Send: `POST /api/session/{id}/prompt` (`text`, `files`, `agents`, ...).
+- Messages: `GET /api/session/{id}/message`, `.../message/{messageID}`.
+- Live updates: `GET /api/event`. Not yet tested; confirm the format first.
+- Model: `POST /api/session/{id}/model`, plus `GET /api/model`, `/api/model/default`, `/api/provider`.
+- Stop: `POST /api/session/{id}/interrupt`.
+- Permissions: `GET /api/permission/request`, `GET,POST /api/session/{id}/permission`,
+  `POST /api/session/{id}/permission/{requestID}/reply`.
+- Diff and undo: `GET /api/session/{id}/diff`, `POST .../revert/stage`, `.../revert/commit`, `DELETE .../revert`.
+- Pairing: `POST /api/pair`, `GET /auth/connect/{code}`. Links are one-time, 5 minutes.
+- Paths under `/api/experimental` may change. Avoid them.
+
+## NVIDIA models tested with this key (2026-11-04)
+
+Mistral Large 4 (`build` agent) and Nemotron 3 Ultra (`plan` agent) make tool calls. Nemotron 3.5
+Super VL reads images and makes tool calls. FLUX.1-dev makes images at 1024x1024 through
+`ai.api.nvidia.com/v1/genai` (`nvidia-ai image`). Nemotron Parse 2.0 returned 500/502, so
+`nvidia-ai parse` uses Super VL. No video generation model was reachable (Cosmos routes 404).
+
+## Stages
+
+### Stage 0: prove the API from the command line
+No UI work. With curl against a temporary server: create a session, send a prompt, read
+`/api/event` while it replies, switch model, interrupt. Trigger a tool call and watch how
+a permission request appears and how to reply. Record real payloads in `docs/plans/`.
+Decide how the tab authenticates: its own `opencode serve` with a per-launch password looks
+simplest, because it needs no pairing.
+
+**Done when** every stage 1 and 2 call has a recorded example.
+
+### Stage 1: basic chat through OpenCode
+Add an OpenCode model option beside the current ones. Start the server on demand when it is
+chosen and stop it when the shell or tab closes. Stream text with `curl --no-buffer` into a
+`SplitParser`, as `Ai.qml` already does. Support model switching and a real stop button.
+**Tools off**, enforced on the server, not only hidden in the UI.
+
+**Done when** a message streams into the existing bubbles, stop works, and no process is
+left behind.
+
+### Stage 2: safety and tools
+Show Allow/Deny in the chat for every permission request, with the exact command or file.
+Deny on timeout or error. Show tool steps such as "Reading file" and edits. Then move
+`SUPER + A` back to the sidebar and retire the panel.
+
+**Done when** nothing runs without an explicit Allow, proven by a denied edit changing nothing.
+
+### Stage 3: extras
+Chat history from sessions, diffs, undo through revert, and the welcome screen, model menu,
+pill input and better code blocks from the earlier UI list.
+
+## Working rules learned the hard way
+
+- **Test before claiming.** Clean logs missed real layout bugs. Screenshot UI changes.
+- **Do not interrupt the user.** Ask before opening the sidebar or restarting the shell.
+  Prefer hot reload. `hl.dsp.focus` tests fail while their mouse is over another window.
+- **Never add an `IpcHandler` for testing.** A temporary one was at the site of a Quickshell
+  SIGSEGV. A rejected tool call can still have partly run, so re-check state afterwards.
+- **Restarting Quickshell:** `qs -c ii kill` can leave the old copy alive, giving two top
+  bars (`hyprctl monitors` reserved top 80, not 40). Check `qs list --all`; `pgrep -x qs`
+  misses `quickshell`. Kill the older PID.
+- **Reload check:** `Configuration Loaded` count in `qs -c ii log`. The watcher can lag 8s.
+- **`pkill -f` matches your own shell.** Use PIDs. In zsh, `${m}:x` not `$m:x`, and avoid
+  bare `===`.
+- **QML:** `pressX` and `icon` are FINAL on Button. Harness tests: `qmltestrunner` with an
+  `Item` root holding a child `Window`, plus a control case.
+- **Model lists lie.** NVIDIA lists models a key cannot run. Test with the tab's real request.
+- **Store message data before publishing its id** (`Ai.qml` had this backwards).
+- **Commits:** ask before committing or pushing unless told to.
+
+## Verifying a patch
+
+Apply `0001`-`00NN` to a fresh `git -C ~/dots-hyprland archive 97c5bc65 dots/.config/quickshell/ii`
+and diff against the live tree. Only `widgets/shapes` (a submodule) may differ.
+
+## Unrelated open items
+
+- Unconfirmed by the user: "hey" bubble wrapping, top bar spacing, app list search and padlock,
+  Num Lock at reboot, real chat in the OpenCode panel.
+- `custom/execs.lua`, `keybinds.lua`, `rules.lua` differ both ways between repo and live.
+- 465 system updates pending; a Hyprland bump means rebuilding `hyprbars`.
+- The OpenCode launcher, panel, config, `nvidia-ai` and the cursor script are on branch `opencode-ai-tab`, not `main` yet. Merge when ready; they work without the stages below.
+- Tab loop incident, not reproduced: record the time and what opened.

@@ -1,0 +1,36 @@
+#!/bin/sh
+# Opens OpenCode's web interface as an app window. Its background server runs only
+# while the window is open, on localhost, signed in through a one-time link. Keys
+# come from the keyring so they never sit in a file.
+set -eu
+FOLDER="$HOME/dev"
+PROFILE="$HOME/.local/share/opencode-app/chrome"
+
+stop_server() {
+    for pid in $(pgrep -x opencode || true); do
+        case "$(tr '\0' ' ' < "/proc/$pid/cmdline")" in
+            *"serve --service"*) kill "$pid" 2>/dev/null || true ;;
+        esac
+    done
+}
+
+# Already open: bring it to the front
+if hyprctl clients -j | jq -e 'any(.[]; .class | startswith("chrome-127.0.0.1"))' >/dev/null; then
+    hyprctl dispatch 'hl.dsp.focus({window="class:^chrome-127"})' >/dev/null 2>&1 || true
+    exit 0
+fi
+
+KEYS=$(secret-tool lookup application illogical-impulse)
+NVIDIA_API_KEY=$(printf %s "$KEYS" | jq -r '.apiKeys.nvidia // empty')
+GEMINI_API_KEY=$(printf %s "$KEYS" | jq -r '.apiKeys.gemini // empty')
+unset KEYS
+export NVIDIA_API_KEY GEMINI_API_KEY
+
+cd "$FOLDER"
+stop_server  # one started elsewhere wouldn't have the keys
+trap stop_server EXIT INT TERM
+LINK=$(/usr/bin/opencode pair | grep -oE 'http://127\.0\.0\.1:[0-9]+/auth/connect/[A-Za-z0-9_-]+' | head -n 1)
+[ -n "$LINK" ]
+
+mkdir -p "$PROFILE"
+/usr/bin/google-chrome-stable --user-data-dir="$PROFILE" --no-first-run --app="$LINK"

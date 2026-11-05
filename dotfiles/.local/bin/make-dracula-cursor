@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""Builds ~/.local/share/icons/Bibata-Modern-Dracula: Bibata Modern Classic with its
+dark fill in Dracula purple, keeping the white outline and the soft shadow."""
+import os, shutil, stat, struct, sys
+
+import numpy as np
+
+SOURCE = "/usr/share/icons/Bibata-Modern-Classic"
+NAME = "Bibata-Modern-Dracula"
+TARGET = os.path.expanduser(f"~/.local/share/icons/{NAME}")
+PURPLE = np.array([0xBD, 0x93, 0xF9], dtype=np.float32)  # R, G, B
+IMAGE_CHUNK = 0xFFFD0002
+SOLID_ALPHA = 180  # below this it's shadow, which stays as it is
+
+
+def recolor(data, offset, count):
+    pixels = np.frombuffer(data, dtype=np.uint8, count=count * 4, offset=offset)
+    pixels = pixels.reshape(-1, 4).astype(np.float32)  # B, G, R, A, premultiplied
+    alpha = pixels[:, 3:4] / 255.0
+    rgb = np.where(alpha > 0, pixels[:, [2, 1, 0]] / np.maximum(alpha, 1e-3), 0).clip(0, 255)
+    light = rgb.max(axis=1, keepdims=True) / 255.0
+    tinted = PURPLE * (1 - light) + 255 * light
+    result = np.where(pixels[:, 3:4] >= SOLID_ALPHA, tinted, rgb) * alpha
+    pixels[:, 2], pixels[:, 1], pixels[:, 0] = result[:, 0], result[:, 1], result[:, 2]
+    data[offset:offset + count * 4] = pixels.round().clip(0, 255).astype(np.uint8).tobytes()
+
+
+def recolor_file(path):
+    data = bytearray(open(path, "rb").read())
+    header_size, _, entries = struct.unpack_from("<III", data, 4)
+    for entry in range(entries):
+        kind, _, position = struct.unpack_from("<III", data, header_size + entry * 12)
+        if kind == IMAGE_CHUNK:
+            chunk_size, _, _, _, width, height, _, _, _ = struct.unpack_from("<9I", data, position)
+            recolor(data, position + chunk_size, width * height)
+    open(path, "wb").write(data)
+
+
+if not os.path.isdir(SOURCE):
+    sys.exit(f"{SOURCE} is missing")
+shutil.rmtree(TARGET, ignore_errors=True)
+shutil.copytree(SOURCE, TARGET, symlinks=True)
+os.chmod(TARGET, os.stat(TARGET).st_mode | stat.S_IWUSR)
+
+cursors = os.path.join(TARGET, "cursors")
+for name in os.listdir(cursors):
+    path = os.path.join(cursors, name)
+    if not os.path.islink(path):
+        os.chmod(path, 0o644)
+        recolor_file(path)
+
+for theme in ("index.theme", "cursor.theme"):
+    path = os.path.join(TARGET, theme)
+    os.chmod(path, 0o644)
+    text = open(path).read().replace("Bibata-Modern-Classic", NAME)
+    open(path, "w").write(text)
+print(TARGET)

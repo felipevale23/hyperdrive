@@ -23,3 +23,8 @@ hl.on("hyprland.start", function ()
     -- over DBus when an AppMenu registrar exists (~/.local/bin/appmenu).
     autostart("$HOME/.local/bin/appmenu registrar")
 end)
+
+-- Dracula purple cursor. end-4's startup sets its own, so apply this after it.
+hl.on("hyprland.start", function ()
+    hl.exec_cmd("sh -c 'sleep 3; hyprctl setcursor Bibata-Modern-Dracula 24'")
+end)

@@ -65,6 +65,10 @@
 - **AI tab** — chat-style layout, no Anime tab, and NVIDIA NIM plus Gemini models
   (`system/illogical-impulse/ai-models.json`). Add keys with `/key` in the tab. NVIDIA's model
   list shows more than a key can run, so test a model before adding it
+- **OpenCode** — `SUPER+A` toggles it as a left panel; it runs only while open. The old AI
+  sidebar stays on `SUPER+B` and `SUPER+O`
+- **NVIDIA tools** — `nvidia-ai image "prompt"` and `nvidia-ai parse file.png`
+- **Cursor** — Bibata in Dracula purple, built by `make-dracula-cursor`
 - **Custom keybind** — Windows-style `Alt+Tab` workspace switcher (`dotfiles/.config/hypr/custom/`):
   tap = flip to previous workspace; hold Alt + tab = overview picker cycling only
   non-empty workspaces; an evdev watcher closes it on Alt release
