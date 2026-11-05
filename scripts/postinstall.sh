@@ -206,7 +206,10 @@ msg "end-4 settings"
 II_CONF="$HOME/.config/illogical-impulse/config.json"
 if [[ -f "$II_CONF" ]]; then
     tmp="$(mktemp)"
-    jq '.dock.pinnedOnStartup = false' "$II_CONF" > "$tmp" && cat "$tmp" > "$II_CONF"
+    # AI tab models (keys go in with /key, into the keyring); no Anime tab
+    jq --slurpfile models "$SHARE/system/illogical-impulse/ai-models.json" \
+        '.dock.pinnedOnStartup = false | .policies.weeb = 0 | .ai.extraModels = $models[0]' \
+        "$II_CONF" > "$tmp" && cat "$tmp" > "$II_CONF"
     rm -f "$tmp"
 fi
 # close lives in hyprbars and the top bar, so apps don't draw their own

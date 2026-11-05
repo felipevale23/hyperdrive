@@ -1,0 +1,437 @@
+--- a/modules/common/Persistent.qml
++++ b/modules/common/Persistent.qml
+@@ -59,7 +59,7 @@
+             property string hyprlandInstanceSignature: ""
+ 
+             property JsonObject ai: JsonObject {
+-                property string model: "gemini-2.5-flash"
++                property string model: "gemini-3.6-flash"
+                 property real temperature: 0.5
+             }
+ 
+--- a/modules/ii/sidebarLeft/AiChat.qml
++++ b/modules/ii/sidebarLeft/AiChat.qml
+@@ -356,7 +356,7 @@
+                 id: messageListView
+                 z: 0
+                 anchors.fill: parent
+-                spacing: 10
++                spacing: 4
+                 popin: false
+                 topMargin: statusBg.implicitHeight + statusBg.anchors.topMargin * 2
+ 
+@@ -443,11 +443,25 @@
+                         }
+                     }
+                     onClicked: {
++                        if (suggestions.choosingModel) {
++                            suggestions.selectedIndex = index;
++                            suggestions.chooseSelectedModel();
++                            return;
++                        }
+                         suggestions.acceptSuggestion(modelData.name);
+                     }
+                 }
+             }
+ 
++            readonly property bool choosingModel: visible && messageInputField.text.startsWith(`${root.commandPrefix}model`)
++
++            // Suggestion names can include the "/model " prefix, so take the last word
++            function chooseSelectedModel() {
++                const modelId = root.suggestionList[suggestions.selectedIndex].name.split(" ").pop();
++                messageInputField.clear();
++                root.handleInput(`${root.commandPrefix}model ${modelId}`);
++            }
++
+             function acceptSuggestion(word) {
+                 const words = messageInputField.text.trim().split(/\s+/);
+                 if (words.length > 0) {
+@@ -651,6 +665,9 @@
+                                     // Insert newline
+                                     messageInputField.insert(messageInputField.cursorPosition, "\n");
+                                     event.accepted = true;
++                                } else if (suggestions.choosingModel) {
++                                    suggestions.chooseSelectedModel();
++                                    event.accepted = true;
+                                 } else {
+                                     // Accept text
+                                     const inputText = messageInputField.text;
+--- a/modules/ii/sidebarLeft/aiChat/AiMessage.qml
++++ b/modules/ii/sidebarLeft/aiChat/AiMessage.qml
+@@ -13,8 +13,17 @@
+     property var messageData
+     property var messageInputField
+ 
+-    property real messagePadding: 7
+-    property real contentSpacing: 3
++    property real messagePadding: 4
++    property real contentSpacing: 2
++    readonly property bool isUser: messageData?.role === 'user'
++    readonly property real bubblePaddingX: 14
++    readonly property real bubblePaddingY: 9
++    // TextArea's own padding and document margins, which the text can't use
++    readonly property real textAreaPadding: 44
++    // Your messages are bubbles sized to their text, up to most of the width
++    readonly property real bubbleContentWidth: Math.min(
++        (root.width - root.messagePadding * 2) * 0.82 - root.bubblePaddingX * 2,
++        bubbleTextMetrics.advanceWidth + root.textAreaPadding)
+ 
+     property bool enableMouseSelection: false
+     property bool renderMarkdown: true
+@@ -26,8 +35,18 @@
+     anchors.right: parent?.right
+     implicitHeight: columnLayout.implicitHeight + root.messagePadding * 2
+ 
+-    radius: Appearance.rounding.normal
+-    color: Appearance.colors.colLayer1
++    color: "transparent"
++
++    TextMetrics {
++        id: bubbleTextMetrics
++        font.family: Appearance.font.family.reading
++        font.pixelSize: Appearance.font.pixelSize.small
++        text: root.isUser ? (root.messageData?.content ?? "") : ""
++    }
++
++    HoverHandler {
++        id: messageHover
++    }
+ 
+     function saveMessage() {
+         if (!root.editing) return;
+@@ -68,6 +87,16 @@
+         }
+     }
+ 
++    Rectangle { // Your message's bubble
++        visible: root.isUser
++        x: columnLayout.x + messageContentColumnLayout.x - root.bubblePaddingX
++        y: columnLayout.y + messageContentColumnLayout.y - root.bubblePaddingY
++        width: messageContentColumnLayout.width + root.bubblePaddingX * 2
++        height: messageContentColumnLayout.height + root.bubblePaddingY * 2
++        radius: Appearance.rounding.large
++        color: Appearance.colors.colSecondaryContainer
++    }
++
+     ColumnLayout { // Main layout of the whole thing
+         id: columnLayout
+ 
+@@ -77,12 +106,125 @@
+         anchors.margins: messagePadding
+         spacing: root.contentSpacing
+ 
+-        Rectangle {
++        Loader {
++            Layout.fillWidth: true
++            active: root.messageData?.localFilePath && root.messageData?.localFilePath.length > 0
++            sourceComponent: AttachedFileIndicator {
++                filePath: root.messageData?.localFilePath
++                canRemove: false
++            }
++        }
++
++        ColumnLayout { // Message content
++            id: messageContentColumnLayout
++            spacing: 0
++            Layout.fillWidth: !root.isUser
++            Layout.preferredWidth: root.isUser ? root.bubbleContentWidth : -1
++            Layout.alignment: root.isUser ? Qt.AlignRight : Qt.AlignLeft
++            Layout.rightMargin: root.isUser ? root.bubblePaddingX : 0
++            Layout.topMargin: root.isUser ? root.bubblePaddingY : 0
++
++            Item {
++                Layout.fillWidth: true
++                implicitHeight: loadingIndicatorLoader.shown ? loadingIndicatorLoader.implicitHeight : 0
++                implicitWidth: loadingIndicatorLoader.implicitWidth
++                visible: implicitHeight > 0
++
++                Behavior on implicitHeight {
++                    animation: Appearance.animation.elementMove.numberAnimation.createObject(this)
++                }
++                FadeLoader {
++                    id: loadingIndicatorLoader
++                    anchors.centerIn: parent
++                    shown: (root.messageBlocks.length < 1) && (!root.messageData.done)
++                    sourceComponent: MaterialLoadingIndicator {
++                        loading: true
++                    }
++                }
++            }
++            Repeater {
++                model: ScriptModel {
++                    values: root.messageBlocks
++                }
++                delegate: DelegateChooser {
++                    id: messageDelegate
++                    role: "type"
++
++                    DelegateChoice { roleValue: "code"; MessageCodeBlock {
++                        editing: root.editing
++                        renderMarkdown: root.renderMarkdown
++                        enableMouseSelection: root.enableMouseSelection
++                        segmentContent: modelData.content
++                        segmentLang: modelData.lang
++                        messageData: root.messageData
++                    } }
++                    DelegateChoice { roleValue: "think"; MessageThinkBlock {
++                        editing: root.editing
++                        renderMarkdown: root.renderMarkdown
++                        enableMouseSelection: root.enableMouseSelection
++                        segmentContent: modelData.content
++                        messageData: root.messageData
++                        done: root.messageData?.done ?? false
++                        completed: modelData.completed ?? false
++                    } }
++                    DelegateChoice { roleValue: "text"; MessageTextBlock {
++                        editing: root.editing
++                        renderMarkdown: root.renderMarkdown
++                        enableMouseSelection: root.enableMouseSelection
++                        segmentContent: modelData.content
++                        messageData: root.messageData
++                        done: root.messageData?.done ?? false
++                        forceDisableChunkSplitting: root.messageData?.content.includes("```") ?? true
++                    } }
++                }
++            }
++        }
++
++        Flow { // Annotations
++            visible: root.messageData?.annotationSources?.length > 0
++            spacing: 5
++            Layout.fillWidth: true
++            Layout.alignment: Qt.AlignLeft
++
++            Repeater {
++                model: ScriptModel {
++                    values: root.messageData?.annotationSources || []
++                }
++                delegate: AnnotationSourceButton {
++                    required property var modelData
++                    displayText: modelData.text
++                    url: modelData.url
++                }
++            }
++        }
++
++        Flow { // Search queries
++            visible: root.messageData?.searchQueries?.length > 0
++            spacing: 5
+             Layout.fillWidth: true
++            Layout.alignment: Qt.AlignLeft
++
++            Repeater {
++                model: ScriptModel {
++                    values: root.messageData?.searchQueries || []
++                }
++                delegate: SearchQueryButton {
++                    required property var modelData
++                    query: modelData
++                }
++            }
++        }
++
++        Rectangle { // Message actions, shown on hover
++            Layout.fillWidth: true
++            Layout.topMargin: root.isUser ? root.bubblePaddingY - 4 : 0
+             implicitWidth: headerRowLayout.implicitWidth + 4 * 2
+             implicitHeight: headerRowLayout.implicitHeight + 4 * 2
+-            color: Appearance.colors.colSecondaryContainer
+-            radius: Appearance.rounding.small
++            color: "transparent"
++            opacity: (messageHover.hovered || root.editing) ? 1 : 0
++            Behavior on opacity {
++                animation: Appearance.animation.elementMoveFast.numberAnimation.createObject(this)
++            }
+         
+             RowLayout { // Header
+                 id: headerRowLayout
+@@ -100,6 +242,7 @@
+ 
+                     RowLayout {
+                         id: nameRowLayout
++                        visible: !root.isUser
+                         anchors.verticalCenter: parent.verticalCenter
+                         anchors.left: parent.left
+                         anchors.right: parent.right
+@@ -123,7 +266,7 @@
+                                     messageData?.role == 'user' ? 'linux-symbolic' : 'desktop-symbolic'
+ 
+                                 colorize: true
+-                                color: Appearance.m3colors.m3onSecondaryContainer
++                                color: Appearance.colors.colSubtext
+                             }
+ 
+                             MaterialSymbol {
+@@ -131,7 +274,7 @@
+                                 anchors.centerIn: parent
+                                 visible: !modelIcon.visible
+                                 iconSize: Appearance.font.pixelSize.larger
+-                                color: Appearance.m3colors.m3onSecondaryContainer
++                                color: Appearance.colors.colSubtext
+                                 text: messageData?.role == 'user' ? 'person' : 
+                                     messageData?.role == 'interface' ? 'settings' : 
+                                     messageData?.role == 'assistant' ? 'neurology' : 
+@@ -144,8 +287,8 @@
+                             Layout.alignment: Qt.AlignVCenter
+                             Layout.fillWidth: true
+                             elide: Text.ElideRight
+-                            font.pixelSize: Appearance.font.pixelSize.normal
+-                            color: Appearance.m3colors.m3onSecondaryContainer
++                            font.pixelSize: Appearance.font.pixelSize.smaller
++                            color: Appearance.colors.colSubtext
+                             text: messageData?.role == 'assistant' ? Ai.models[messageData?.model].name :
+                                 (messageData?.role == 'user' && SystemInfo.username) ? SystemInfo.username :
+                                 Translation.tr("Interface")
+@@ -253,110 +396,6 @@
+                 }
+             }
+         }
+-
+-        Loader {
+-            Layout.fillWidth: true
+-            active: root.messageData?.localFilePath && root.messageData?.localFilePath.length > 0
+-            sourceComponent: AttachedFileIndicator {
+-                filePath: root.messageData?.localFilePath
+-                canRemove: false
+-            }
+-        }
+-
+-        ColumnLayout { // Message content
+-            id: messageContentColumnLayout
+-            spacing: 0
+-
+-            Item {
+-                Layout.fillWidth: true
+-                implicitHeight: loadingIndicatorLoader.shown ? loadingIndicatorLoader.implicitHeight : 0
+-                implicitWidth: loadingIndicatorLoader.implicitWidth
+-                visible: implicitHeight > 0
+-
+-                Behavior on implicitHeight {
+-                    animation: Appearance.animation.elementMove.numberAnimation.createObject(this)
+-                }
+-                FadeLoader {
+-                    id: loadingIndicatorLoader
+-                    anchors.centerIn: parent
+-                    shown: (root.messageBlocks.length < 1) && (!root.messageData.done)
+-                    sourceComponent: MaterialLoadingIndicator {
+-                        loading: true
+-                    }
+-                }
+-            }
+-            Repeater {
+-                model: ScriptModel {
+-                    values: root.messageBlocks
+-                }
+-                delegate: DelegateChooser {
+-                    id: messageDelegate
+-                    role: "type"
+-
+-                    DelegateChoice { roleValue: "code"; MessageCodeBlock {
+-                        editing: root.editing
+-                        renderMarkdown: root.renderMarkdown
+-                        enableMouseSelection: root.enableMouseSelection
+-                        segmentContent: modelData.content
+-                        segmentLang: modelData.lang
+-                        messageData: root.messageData
+-                    } }
+-                    DelegateChoice { roleValue: "think"; MessageThinkBlock {
+-                        editing: root.editing
+-                        renderMarkdown: root.renderMarkdown
+-                        enableMouseSelection: root.enableMouseSelection
+-                        segmentContent: modelData.content
+-                        messageData: root.messageData
+-                        done: root.messageData?.done ?? false
+-                        completed: modelData.completed ?? false
+-                    } }
+-                    DelegateChoice { roleValue: "text"; MessageTextBlock {
+-                        editing: root.editing
+-                        renderMarkdown: root.renderMarkdown
+-                        enableMouseSelection: root.enableMouseSelection
+-                        segmentContent: modelData.content
+-                        messageData: root.messageData
+-                        done: root.messageData?.done ?? false
+-                        forceDisableChunkSplitting: root.messageData?.content.includes("```") ?? true
+-                    } }
+-                }
+-            }
+-        }
+-
+-        Flow { // Annotations
+-            visible: root.messageData?.annotationSources?.length > 0
+-            spacing: 5
+-            Layout.fillWidth: true
+-            Layout.alignment: Qt.AlignLeft
+-
+-            Repeater {
+-                model: ScriptModel {
+-                    values: root.messageData?.annotationSources || []
+-                }
+-                delegate: AnnotationSourceButton {
+-                    required property var modelData
+-                    displayText: modelData.text
+-                    url: modelData.url
+-                }
+-            }
+-        }
+-
+-        Flow { // Search queries
+-            visible: root.messageData?.searchQueries?.length > 0
+-            spacing: 5
+-            Layout.fillWidth: true
+-            Layout.alignment: Qt.AlignLeft
+-
+-            Repeater {
+-                model: ScriptModel {
+-                    values: root.messageData?.searchQueries || []
+-                }
+-                delegate: SearchQueryButton {
+-                    required property var modelData
+-                    query: modelData
+-                }
+-            }
+-        }
+ 
+     }
+ }
+--- a/services/Ai.qml
++++ b/services/Ai.qml
+@@ -459,8 +459,8 @@
+             "done": true,
+         });
+         const id = idForMessage(aiMessage);
+-        root.messageIDs = [...root.messageIDs, id];
+         root.messageByID[id] = aiMessage;
++        root.messageIDs = [...root.messageIDs, id];
+     }
+ 
+     function removeMessage(index) {
+@@ -626,8 +626,8 @@
+                 "done": false,
+             });
+             const id = idForMessage(requester.message);
+-            root.messageIDs = [...root.messageIDs, id];
+             root.messageByID[id] = requester.message;
++            root.messageIDs = [...root.messageIDs, id];
+ 
+             /* Build header string for curl */ 
+             let headerString = Object.entries(requestHeaders)
+@@ -755,8 +755,8 @@
+     function addFunctionOutputMessage(name, output) {
+         const aiMessage = createFunctionOutputMessage(name, output);
+         const id = idForMessage(aiMessage);
+-        root.messageIDs = [...root.messageIDs, id];
+         root.messageByID[id] = aiMessage;
++        root.messageIDs = [...root.messageIDs, id];
+     }
+ 
+     function rejectCommand(message: AiMessageData) {
+@@ -771,8 +771,8 @@
+ 
+         const responseMessage = createFunctionOutputMessage(message.functionName, "", false);
+         const id = idForMessage(responseMessage);
+-        root.messageIDs = [...root.messageIDs, id];
+         root.messageByID[id] = responseMessage;
++        root.messageIDs = [...root.messageIDs, id];
+ 
+         commandExecutionProc.message = responseMessage;
+         commandExecutionProc.baseMessageContent = responseMessage.content;

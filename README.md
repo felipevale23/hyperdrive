@@ -62,6 +62,9 @@
   offers its menus in the top bar. Re-run it after each Steam update, then restart Steam
 - **Window buttons** — macOS-style red, yellow and green on the left of `hyprbars` title
   bars and in the top bar
+- **AI tab** — chat-style layout, no Anime tab, and NVIDIA NIM plus Gemini models
+  (`system/illogical-impulse/ai-models.json`). Add keys with `/key` in the tab. NVIDIA's model
+  list shows more than a key can run, so test a model before adding it
 - **Custom keybind** — Windows-style `Alt+Tab` workspace switcher (`dotfiles/.config/hypr/custom/`):
   tap = flip to previous workspace; hold Alt + tab = overview picker cycling only
   non-empty workspaces; an evdev watcher closes it on Alt release
