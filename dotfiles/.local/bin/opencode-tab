@@ -2,15 +2,19 @@
 """Connects the Quickshell AI tab to OpenCode.
 
   opencode-tab serve                       run a private server until told to stop
-  opencode-tab send MODEL SESSION MODE     send the message on stdin, print events as JSON lines
+  opencode-tab send MODEL SESSION MODE AGENT   send the message on stdin, print events as JSON lines
   opencode-tab reply SESSION REQUEST ANSWER   answer a permission request: once or reject
+  opencode-tab find QUERY                  search project files and folders for @ mentions
   opencode-tab sessions                    list past tab chats as JSON
   opencode-tab messages SESSION            print a chat's messages as JSON
   opencode-tab diff SESSION                print the files a chat changed as JSON
   opencode-tab undo SESSION                undo the last turn, its file changes included
 
 MODEL is provider/model. SESSION may be empty, which starts a new session. MODE is
-tools, where everything but project reads waits for an answer, or off.
+tools, where everything but project reads waits for an answer, or off. AGENT is build
+or plan. Plan can't edit or run commands. @path in a message attaches a project file or
+folder, and @general or @explore asks for a subagent. Attachments skip OpenCode's
+permission checks, so anything outside the project or any env file is refused here.
 
 The server listens on localhost with a new password each launch. Keys come from the
 keyring and reach only the server's environment. Every session carries explicit rules,
@@ -40,12 +44,22 @@ TOOLS_OFF = [{"action": "*", "resource": "*", "effect": "deny"}]
 # as written, so a read rule would follow a symlink out of the project. Plain project
 # reads are answered here instead, by safe_read, which looks at where the path really goes.
 # grep and glob always ask, since they could read a .env. The denied tools can't go through
-# one Allow card: subagent runs in a session this helper doesn't watch, execute scripts
-# other tools, and question needs a form.
+# one Allow card: execute scripts other tools, and question needs a form. Subagents ask
+# like anything else, and their child sessions inherit these rules.
 TOOLS_ON = [{"action": "*", "resource": "*", "effect": "ask"}] + [
     {"action": tool, "resource": "*", "effect": "deny"}
-     for tool in ("subagent", "execute", "question", "skill", "browser")]
-RULES = {"tools": TOOLS_ON, "off": TOOLS_OFF}
+     for tool in ("execute", "question", "skill", "browser")]
+# The session's rules override the agent's own, so Plan has to be made read-only here.
+PLAN_ON = TOOLS_ON + [{"action": tool, "resource": "*", "effect": "deny"} for tool in ("edit", "shell")]
+AGENTS = ("build", "plan")
+SUBAGENTS = ("general", "explore")
+MENTION = re.compile(r'''(?<!\S)@(?:"([^"]+)"|(\S+))''')
+
+
+def rules_for(mode, agent):
+    if mode == "off":
+        return TOOLS_OFF
+    return PLAN_ON if agent == "plan" else TOOLS_ON
 JOURNALS = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "opencode-tab")
 START_TIMEOUT = 45  # seconds to wait for the server
 EVENT_TIMEOUT = 180  # seconds of silence on the event stream, heartbeats included
@@ -164,7 +178,7 @@ def data_of(reply):
     return reply.get("data", reply) if isinstance(reply, dict) else {}
 
 
-def prepare_session(api, session, model, rules, title):
+def prepare_session(api, session, model, rules, title, agent):
     """Returns a session id with exactly these rules, on the wanted model, or raises."""
     provider, _, model_id = model.partition("/")
     wanted = {"id": model_id, "providerID": provider}
@@ -177,7 +191,7 @@ def prepare_session(api, session, model, rules, title):
             raise RuntimeError(f"could not read the session ({status})")
     if info is None:
         status, reply = api.call("POST", "/api/session", {
-            "title": title, "location": {"directory": FOLDER}, "model": wanted, "permissions": rules,
+            "title": title, "location": {"directory": FOLDER}, "model": wanted, "permissions": rules, "agent": agent,
             "metadata": {"source": "ai-tab"}})
         if status != 200:
             raise RuntimeError(f"could not create a session ({status})")
@@ -187,6 +201,10 @@ def prepare_session(api, session, model, rules, title):
         reread = api.call("GET", f"/api/session/{info['id']}")
         if status != 204 or data_of(reread[1]).get("permissions") != rules:
             raise RuntimeError("refusing to send: could not set this session's permission rules")
+    if (info.get("agent") or "build") != agent:
+        status, _ = api.call("POST", f"/api/session/{info['id']}/agent", {"agent": agent})
+        if status != 204:
+            raise RuntimeError(f"could not switch agent ({status})")
     current = info.get("model") or {}
     if (current.get("id"), current.get("providerID")) != (model_id, provider):
         status, _ = api.call("POST", f"/api/session/{info['id']}/model", {"model": wanted})
@@ -215,67 +233,98 @@ def journal_read(session):
         return {}
 
 
-def safe_read(request):
-    """True for a read that stays inside the project and isn't an env file."""
-    if request.get("action") != "read" or not request.get("resources"):
-        return False
+def safe_path(resource):
+    """True for a path that really stays inside the project and isn't an env file."""
     root = os.path.realpath(FOLDER)
-    for resource in request["resources"]:
-        written = os.path.join(FOLDER, resource)
-        real = os.path.realpath(written)
-        if not real.startswith(root + os.sep):
-            return False
-        if any(re.fullmatch(r"\.env(\..*)?|.*\.env", os.path.basename(path)) for path in (written, real)):
-            return False
-    return True
+    written = os.path.join(FOLDER, resource)
+    real = os.path.realpath(written)
+    if not real.startswith(root + os.sep):
+        return False
+    return not any(re.fullmatch(r"\.env(\..*)?|.*\.env", os.path.basename(path.rstrip("/"))) for path in (written, real))
+
+
+def safe_read(request):
+    return request.get("action") == "read" and bool(request.get("resources")) and all(map(safe_path, request["resources"]))
+
+
+def read_mentions(text):
+    """Splits @mentions into prompt attachments. Unknown names stay plain text."""
+    files, agents, refused = [], [], []
+    for found in MENTION.finditer(text):
+        name = found[1] or found[2].rstrip(".,;:!?)")
+        mention = {"start": found.start(), "end": found.start() + len(name) + 1, "text": found[0]}
+        if name in SUBAGENTS:
+            agents.append({"name": name, "mention": mention})
+        elif os.path.lexists(os.path.join(FOLDER, name)):
+            if safe_path(name):
+                uri = "file://" + urllib.parse.quote(os.path.realpath(os.path.join(FOLDER, name)))
+                files.append({"uri": uri, "name": name, "mention": mention})
+            else:
+                refused.append(name)
+    return files, agents, refused
 
 
 def target_of(tool_input):
-    for key in ("path", "command", "pattern", "url", "query"):
+    for key in ("path", "command", "pattern", "url", "query", "description"):
         if isinstance(tool_input, dict) and tool_input.get(key):
             return str(tool_input[key]).splitlines()[0][:120]
     return ""
 
 
-def send(model, session, mode, text):
+def send(model, session, mode, agent, text):
     die_with_parent()
     active = {}
     timers = {}
     timed_out = set()
     tools = {}
     asked_files = {}
+    family = set()  # this turn's session and every subagent session under it
 
     def stop(*_):
         # The shell's stop button. The turn must end on the server too.
         if active:
+            interrupt_all()
+        os._exit(0)
+
+    def interrupt_all():
+        for member in list(family):
             try:
-                active["api"].call("POST", f"/api/session/{active['id']}/interrupt", timeout=5)
+                active["api"].call("POST", f"/api/session/{member}/interrupt", timeout=5)
             except (OSError, http.client.HTTPException):
                 pass
-        os._exit(0)
 
     signal.signal(signal.SIGTERM, stop)
     try:
         api = connect()
-        sid = prepare_session(api, session, model, RULES[mode], " ".join(text.split())[:60] or "AI tab")
+        sid = prepare_session(api, session, model, rules_for(mode, agent), " ".join(text.split())[:60] or "AI tab", agent)
+        family.add(sid)
         active.update(api=api, id=sid)
         emit({"type": "session", "id": sid})
 
-        def expire(request):
+        files, subagents, refused = read_mentions(text)
+        if files or refused:
+            emit({"type": "attached", "files": [item["name"] for item in files], "refused": refused})
+
+        def expire(request, owner):
             timed_out.add(request)
             try:
-                api.call("POST", f"/api/session/{sid}/permission/{request}/reply", {"decision": "reject"})
+                api.call("POST", f"/api/session/{owner}/permission/{request}/reply", {"decision": "reject"})
             except (OSError, http.client.HTTPException):
                 pass
 
         for event in api.events():
             kind, data = event.get("type"), event.get("data") or {}
             if kind == "server.connected":  # listening now, so nothing can be missed
-                status, _ = api.call("POST", f"/api/session/{sid}/prompt", {"text": text})
+                status, _ = api.call("POST", f"/api/session/{sid}/prompt", {"text": text, "files": files, "agents": subagents})
                 if status != 200:
                     raise RuntimeError(f"could not send the message ({status})")
-            elif data.get("sessionID") != sid:
+            elif kind == "session.created" and data.get("parentID") in family:
+                family.add(data.get("sessionID"))
+            elif data.get("sessionID") not in family:
                 continue
+            elif data.get("sessionID") != sid and kind in ("session.text.delta", "session.reasoning.delta",
+                                                           "session.usage.updated", *TERMINAL):
+                continue  # a subagent's reply comes back to the model as a tool result
             elif kind == "session.text.delta":
                 emit({"type": "text", "delta": data.get("delta", "")})
             elif kind == "session.reasoning.delta":
@@ -283,18 +332,22 @@ def send(model, session, mode, text):
             elif kind == "session.usage.updated":
                 emit({"type": "usage", "tokens": data.get("tokens", {})})
             elif kind == "permission.asked":
+                owner = data.get("sessionID")
                 if safe_read(data):
-                    status, _ = api.call("POST", f"/api/session/{sid}/permission/{data['id']}/reply", {"decision": "once"})
+                    status, _ = api.call("POST", f"/api/session/{owner}/permission/{data['id']}/reply", {"decision": "once"})
                     if status == 204:
                         continue
-                timer = threading.Timer(PERMISSION_TIMEOUT, expire, [data["id"]])
+                timer = threading.Timer(PERMISSION_TIMEOUT, expire, [data["id"], owner])
                 timer.daemon = True
                 timers[data["id"]] = timer
                 timer.start()
                 files = (data.get("metadata") or {}).get("files") or []
-                asked_files[(data.get("source") or {}).get("id")] = files
-                emit({"type": "permission", "id": data["id"], "action": data.get("action", ""),
-                      "resources": data.get("resources", []),
+                source = (data.get("source") or {}).get("id")
+                asked_files[source] = files
+                tool_input = tools.get(source, {}).get("input") or {}
+                emit({"type": "permission", "id": data["id"], "session": owner, "action": data.get("action", ""),
+                      "resources": data.get("resources", []), "subagent": owner != sid,
+                      "detail": json.dumps(tool_input, indent=2) if data.get("action") == "subagent" else "",
                       "patch": "\n".join(entry.get("patch", "") for entry in files)})
             elif kind == "permission.replied":
                 request = data.get("requestID")
@@ -306,18 +359,21 @@ def send(model, session, mode, text):
             elif kind == "session.tool.input.started":
                 tools[data.get("id")] = {"name": data.get("name", "")}
             elif kind == "session.tool.called":
-                tools.setdefault(data.get("id"), {})["target"] = target_of(data.get("input"))
+                tools.setdefault(data.get("id"), {}).update(target=target_of(data.get("input")), input=data.get("input"))
             elif kind in ("session.tool.success", "session.tool.failed"):
                 tool = tools.get(data.get("id"), {})
                 error = data.get("error") or {}
                 if kind.endswith("success") and tool.get("name") == "write" and asked_files.get(data.get("id")):
                     journal_add(sid, data["id"], asked_files[data["id"]])
                 emit({"type": "tool", "name": tool.get("name", ""), "target": tool.get("target", ""),
+                      "subagent": data.get("sessionID") != sid,
                       "ok": kind.endswith("success"), "error": error.get("message"),
                       "denied": error.get("type") in ("permission.rejected", "aborted")})
             elif kind in TERMINAL:
                 for timer in timers.values():
                     timer.cancel()
+                family.discard(sid)
+                interrupt_all()  # a background subagent must not outlive the turn
                 emit({"type": kind.rsplit(".", 1)[1], "error": (data.get("error") or {}).get("message")})
                 return 0
         raise RuntimeError("the event stream ended early")
@@ -339,6 +395,13 @@ def checked(reply_):
     if status not in (200, 204):
         raise RuntimeError((body or {}).get("message") or f"the server returned {status}")
     return body
+
+
+def find(query):
+    params = urllib.parse.urlencode({"directory": FOLDER, "query": query, "limit": 15})
+    found = checked(connect().call("GET", f"/api/fs/find?{params}"))["data"]
+    agents = [{"path": name, "type": "agent"} for name in SUBAGENTS if name.startswith(query)]
+    return agents + [item for item in found if safe_path(item["path"])][:12]
 
 
 def sessions():
@@ -439,8 +502,10 @@ def main():
     args = sys.argv[1:]
     if args == ["serve"]:
         return serve()
-    if len(args) == 4 and args[0] == "send" and args[3] in RULES:
-        return send(args[1], args[2], args[3], sys.stdin.read().removesuffix("\n"))
+    if len(args) == 5 and args[0] == "send" and args[3] in ("tools", "off") and args[4] in AGENTS:
+        return send(args[1], args[2], args[3], args[4], sys.stdin.read().removesuffix("\n"))
+    if len(args) == 2 and args[0] == "find":
+        return report(find, args[1])
     if len(args) == 4 and args[0] == "reply":
         return reply(*args[1:])
     if args == ["sessions"]:

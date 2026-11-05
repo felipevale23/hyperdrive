@@ -1,0 +1,310 @@
+--- a/services/Ai.qml
++++ b/services/Ai.qml
+@@ -33,6 +33,10 @@
+     readonly property bool busy: requester.running
+     readonly property string opencodeHelper: `${Quickshell.env("HOME")}/.local/bin/opencode-tab`
+     property bool opencodeServerWanted: false
++    property string opencodeAgent: "build"
++    readonly property bool opencodeModel: models[currentModelId]?.api_format === "opencode"
++    property var mentionResults: []
++    property string mentionQuery: ""
+ 
+     property string systemPrompt: {
+         let prompt = Config.options?.ai?.systemPrompt ?? "";
+@@ -332,7 +336,7 @@
+             root.addModel(`opencode-${id}`, {
+                 "name": `OpenCode: ${name}`,
+                 "icon": icon,
+-                "description": Translation.tr("Online through OpenCode | Keeps the chat in an OpenCode session. Asks before doing anything but reading the project"),
++                "description": Translation.tr("Online through OpenCode | Keeps the chat in an OpenCode session. Asks before doing anything but reading the project. @ finds files, /agent switches Build and Plan"),
+                 "homepage": "https://opencode.ai",
+                 "endpoint": "http://127.0.0.1",
+                 "model": `nvidia/${model}`,
+@@ -641,6 +645,46 @@
+         }
+     }
+ 
++    function setOpencodeAgent(name) {
++        if (name !== "build" && name !== "plan") {
++            root.addMessage(Translation.tr("Agents: build changes files after asking, plan only reads and plans"), root.interfaceRole);
++            return;
++        }
++        root.opencodeAgent = name;
++        root.addMessage(name === "plan" ? Translation.tr("Plan agent: reads and plans, can't edit files or run commands")
++                                        : Translation.tr("Build agent: can change files, asking first"), root.interfaceRole);
++    }
++
++    // Finds @ mentions. One search at a time, and only the newest query matters.
++    Process {
++        id: opencodeFinder
++        property string query
++        stdout: StdioCollector {
++            onStreamFinished: {
++                try {
++                    const reply = JSON.parse(text);
++                    if (reply.ok && opencodeFinder.query === root.mentionQuery) root.mentionResults = reply.result;
++                } catch (e) {
++                    root.mentionResults = [];
++                }
++            }
++        }
++        onExited: if (opencodeFinder.query !== root.mentionQuery) root.startMentionSearch()
++    }
++
++    function startMentionSearch() {
++        root.opencodeServerWanted = true;
++        opencodeIdleTimer.restart();
++        opencodeFinder.query = root.mentionQuery;
++        opencodeFinder.command = [root.opencodeHelper, "find", root.mentionQuery];
++        opencodeFinder.running = true;
++    }
++
++    function findMentions(query) {
++        root.mentionQuery = query;
++        if (!opencodeFinder.running) root.startMentionSearch();
++    }
++
+     function runOpencode(args, onResult) {
+         if (root.busy || opencodeCommand.running) {
+             root.addMessage(Translation.tr("Wait for the current reply to finish"), root.interfaceRole);
+@@ -769,6 +813,7 @@
+ 
+             if (model.api_format === "opencode") {
+                 requester.currentStrategy.toolsOn = root.currentTool === "functions";
++                requester.currentStrategy.agent = root.opencodeAgent;
+                 root.opencodeServerWanted = true;
+                 opencodeIdleTimer.restart();
+             }
+@@ -940,7 +985,7 @@
+     function answerPermission(message: AiMessageData, answer) {
+         const strategy = root.apiStrategies.opencode;
+         message.permissionFence = ""; // Hide the buttons. The card closes when the server confirms
+-        opencodeReply.command = [root.opencodeHelper, "reply", strategy.sessionId, strategy.activeRequest, answer];
++        opencodeReply.command = [root.opencodeHelper, "reply", strategy.activeSession, strategy.activeRequest, answer];
+         opencodeReply.running = true;
+     }
+ 
+--- a/services/ai/OpenCodeApiStrategy.qml
++++ b/services/ai/OpenCodeApiStrategy.qml
+@@ -17,6 +17,8 @@
+     property bool hasText: false
+     property bool turnExplained: false // A denied card already says why the turn ended
+     property bool toolsOn: true
++    property string agent: "build"
++    property string activeSession: "" // Subagents ask from their own sessions
+     property string activeRequest: ""
+     property string activeFence: ""
+     property string activeLang: ""
+@@ -48,7 +50,7 @@
+         let delimiter = "OPENCODE_TAB_END";
+         while (pendingText.includes(delimiter)) delimiter += "_X";
+         return "#!/usr/bin/env bash\n"
+-            + `exec ${shellQuote(helperPath)} send ${shellQuote(pendingModel)} ${shellQuote(sessionId)} ${toolsOn ? "tools" : "off"} <<'${delimiter}'\n`
++            + `exec ${shellQuote(helperPath)} send ${shellQuote(pendingModel)} ${shellQuote(sessionId)} ${toolsOn ? "tools" : "off"} ${shellQuote(agent)} <<'${delimiter}'\n`
+             + `${pendingText}\n${delimiter}\n`;
+     }
+ 
+@@ -78,6 +80,7 @@
+         case "websearch": return qsTr("search the web");
+         case "grep":
+         case "glob": return qsTr("search files");
++        case "subagent": return qsTr("start a subagent");
+         }
+         return action;
+     }
+@@ -89,13 +92,16 @@
+         endReasoning(message);
+         closeOpenFence(message);
+         const resources = (request.resources ?? []).join("\n");
+-        const body = request.patch?.length > 0 ? `${resources}\n${request.patch}` : resources;
++        const details = request.patch?.length > 0 ? request.patch : (request.detail ?? "");
++        const body = details.length > 0 ? `${resources}\n${details}` : resources;
+         activeRequest = request.id;
+-        activeLang = request.patch?.length > 0 ? "diff" : (request.action === "shell" ? "bash" : "txt");
++        activeSession = request.session ?? sessionId;
++        activeLang = request.patch?.length > 0 ? "diff" : (request.action === "shell" ? "bash" : (request.detail?.length > 0 ? "json" : "markdown"));
+         activeFence = `permission_${activeLang}_${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+         // A fence inside the body would end the card early and hide the rest of it
+         const shown = body.split("```").join("`\u200b`\u200b`");
+-        add(message, `\n\n${qsTr("OpenCode wants to %1:").arg(describe(request.action))}\n\n\`\`\`${activeFence}\n${shown}\n\`\`\`\n`);
++        const who = request.subagent ? qsTr("A subagent") : "OpenCode";
++        add(message, `\n\n${qsTr("%1 wants to %2:").arg(who).arg(describe(request.action))}\n\n\`\`\`${activeFence}\n${shown}\n\`\`\`\n`);
+         message.permissionFence = activeFence;
+     }
+ 
+@@ -140,6 +146,10 @@
+             hasText = true;
+             add(message, event.delta);
+             return {};
++        case "attached":
++            if (event.files.length > 0) add(message, `_${qsTr("Attached: %1").arg(event.files.join(", ").split("_").join("\\_"))}_\n\n`);
++            if (event.refused.length > 0) add(message, `**${qsTr("Not attached, outside the project or a secret file")}**: ${event.refused.join(", ").split("_").join("\\_")}\n\n`);
++            return {};
+         case "permission":
+             queuedRequests = [...queuedRequests, event];
+             showNextRequest(message);
+@@ -158,7 +168,8 @@
+         case "tool":
+             endReasoning(message);
+             if (!event.denied) {
+-                const step = event.target.length > 0 ? `${event.name}: ${event.target}` : event.name;
++                const name = event.subagent ? `subagent ${event.name}` : event.name;
++                const step = event.target.length > 0 ? `${name}: ${event.target}` : name;
+                 add(message, `\n\n\`${step.split("`").join("'")}\`${event.ok ? "" : ` _${qsTr("failed")}_`}\n\n`);
+             }
+             return {};
+--- a/modules/ii/sidebarLeft/AiChat.qml
++++ b/modules/ii/sidebarLeft/AiChat.qml
+@@ -49,6 +49,11 @@
+ 
+     property var allCommands: [
+         {
++            name: "agent",
++            description: Translation.tr("Switch the OpenCode agent: build or plan"),
++            execute: args => root.opencodeOnly(() => Ai.setOpencodeAgent(args[0]))
++        },
++        {
+             name: "history",
+             description: Translation.tr("List past OpenCode chats"),
+             execute: () => root.opencodeOnly(() => Ai.showOpencodeHistory())
+@@ -227,6 +232,24 @@
+         function onAttentionNeeded() {
+             Qt.callLater(messageListView.positionViewAtEnd);
+         }
++        function onMentionResultsChanged() {
++            if (!suggestions.mentionNow()) return;
++            const labels = { "agent": Translation.tr("Subagent"), "directory": Translation.tr("Folder"), "file": Translation.tr("File") };
++            root.suggestionList = Ai.mentionResults.map(item => ({
++                name: `@${/\s/.test(item.path) ? `"${item.path}"` : item.path}`,
++                displayName: item.path,
++                description: labels[item.type]
++            }));
++        }
++    }
++
++    Timer {
++        id: mentionTimer // Waits for a pause in typing
++        interval: 150
++        onTriggered: {
++            const mention = suggestions.mentionNow();
++            if (mention) Ai.findMentions(mention[1]);
++        }
+     }
+ 
+     function handleInput(inputText) {
+@@ -475,6 +498,10 @@
+                         }
+                     }
+                     onClicked: {
++                        if (suggestions.mentionNow()) {
++                            suggestions.acceptMention(modelData.name);
++                            return;
++                        }
+                         if (suggestions.choosingModel) {
+                             suggestions.selectedIndex = index;
+                             suggestions.chooseSelectedModel();
+@@ -486,6 +513,18 @@
+             }
+ 
+             readonly property bool choosingModel: visible && messageInputField.text.startsWith(`${root.commandPrefix}model`)
++            // A function, not a binding: onTextChanged can run before bindings update
++            function mentionNow() {
++                return Ai.opencodeModel ? messageInputField.text.match(/(?:^|\s)@([^\s"]*)$/) : null;
++            }
++            readonly property bool choosingMention: visible && Ai.opencodeModel && /(?:^|\s)@[^\s"]*$/.test(messageInputField.text)
++
++            // Only the @word changes, so line breaks in the message survive
++            function acceptMention(name) {
++                messageInputField.text = messageInputField.text.replace(/@[^\s"]*$/, `${name} `);
++                messageInputField.cursorPosition = messageInputField.text.length;
++                messageInputField.forceActiveFocus();
++            }
+ 
+             // Suggestion names can include the "/model " prefix, so take the last word
+             function chooseSelectedModel() {
+@@ -510,7 +549,8 @@
+             function acceptSelectedWord() {
+                 if (suggestions.selectedIndex >= 0 && suggestions.selectedIndex < suggestionRepeater.count) {
+                     const word = root.suggestionList[suggestions.selectedIndex].name;
+-                    suggestions.acceptSuggestion(word);
++                    if (suggestions.mentionNow()) suggestions.acceptMention(word);
++                    else suggestions.acceptSuggestion(word);
+                 }
+             }
+         }
+@@ -573,6 +613,18 @@
+                                 root.suggestionQuery = "";
+                                 root.suggestionList = [];
+                                 return;
++                            } else if (suggestions.mentionNow()) {
++                                mentionTimer.restart();
++                            } else if (messageInputField.text.startsWith(`${root.commandPrefix}agent`)) {
++                                const typed = messageInputField.text.split(" ")[1] ?? "";
++                                root.suggestionList = [
++                                    { name: "build", description: Translation.tr("Can change files, asking first") },
++                                    { name: "plan", description: Translation.tr("Reads and plans, can't edit files or run commands") },
++                                ].filter(agent => agent.name.startsWith(typed)).map(agent => ({
++                                    name: `${root.commandPrefix}agent ${agent.name}`,
++                                    displayName: agent.name,
++                                    description: agent.description
++                                }));
+                             } else if (messageInputField.text.startsWith(`${root.commandPrefix}model`)) {
+                                 root.suggestionQuery = messageInputField.text.split(" ")[1] ?? "";
+                                 const modelResults = Fuzzy.go(root.suggestionQuery, Ai.modelList.map(model => {
+@@ -666,6 +718,8 @@
+                                         description: Ai.toolDescriptions[toolName]
+                                     };
+                                 });
++                            } else if (!messageInputField.text.startsWith(root.commandPrefix)) {
++                                root.suggestionList = []; // Clears a finished @ search
+                             } else if (messageInputField.text.startsWith(root.commandPrefix)) {
+                                 root.suggestionQuery = messageInputField.text;
+                                 root.suggestionList = root.allCommands.filter(cmd => cmd.name.startsWith(messageInputField.text.substring(1))).map(cmd => {
+@@ -700,6 +754,9 @@
+                                 } else if (suggestions.choosingModel) {
+                                     suggestions.chooseSelectedModel();
+                                     event.accepted = true;
++                                } else if (suggestions.choosingMention) {
++                                    suggestions.acceptSelectedWord();
++                                    event.accepted = true;
+                                 } else {
+                                     // Accept text. While a reply runs, keep a message in the box
+                                     const inputText = messageInputField.text;
+@@ -804,7 +861,7 @@
+                 ApiInputBoxIndicator {
+                     // Model indicator
+                     icon: "api"
+-                    text: Ai.getModel().name
++                    text: Ai.getModel().name.replace("OpenCode: ", "")
+                     tooltipText: Translation.tr("Current model: %1\nClick to choose another").arg(Ai.getModel().name)
+                     onClicked: {
+                         messageInputField.text = `${root.commandPrefix}model `;
+@@ -814,6 +871,15 @@
+                 }
+ 
+                 ApiInputBoxIndicator {
++                    // Agent indicator
++                    visible: Ai.opencodeModel
++                    icon: "smart_toy"
++                    text: Ai.opencodeAgent === "plan" ? Translation.tr("Plan") : Translation.tr("Build")
++                    tooltipText: Translation.tr("OpenCode agent. Click to switch between Build and Plan")
++                    onClicked: Ai.setOpencodeAgent(Ai.opencodeAgent === "plan" ? "build" : "plan")
++                }
++
++                ApiInputBoxIndicator {
+                     // Tool indicator
+                     icon: "service_toolbox"
+                     text: Ai.currentTool.charAt(0).toUpperCase() + Ai.currentTool.slice(1)
+--- a/modules/ii/sidebarLeft/aiChat/MessageCodeBlock.qml
++++ b/modules/ii/sidebarLeft/aiChat/MessageCodeBlock.qml
+@@ -220,7 +220,9 @@
+                         font.pixelSize: Appearance.font.pixelSize.small
+                         selectedTextColor: Appearance.m3colors.m3onSecondaryContainer
+                         selectionColor: Appearance.colors.colSecondaryContainer
+-                        // wrapMode: TextEdit.Wrap
++                        // A permission card must show all of the command, not scroll it out of view
++                        wrapMode: root.isPermissionCard ? TextEdit.WrapAnywhere : TextEdit.NoWrap
++                        width: root.isPermissionCard ? codeScrollView.width : implicitWidth
+                         color: messageData.thinking ? Appearance.colors.colSubtext : Appearance.colors.colOnLayer1
+ 
+                         text: segmentContent

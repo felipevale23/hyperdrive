@@ -169,8 +169,8 @@ returned anything looser than the rule, so it is harmless, but it can confuse te
 
 - **Tools offered to the model:** `edit`, `execute`, `glob`, `grep`, `question`, `read`, `shell`, `skill`,
   `subagent`, `webfetch`, `websearch`, `write`. A `* * deny` rule sends an empty list, confirmed by recording the request.
-- **The tab denies** `subagent` (its requests belong to a child session the helper doesn't watch), `execute` (a
-  JavaScript runtime that scripts other tools), `question` (needs a form) and `skill`. A model that calls one anyway
+- **The tab denies** `execute` (a JavaScript runtime that scripts other tools), `question` (needs a form) and `skill`.
+  Subagents were denied here too until patch 0016. A model that calls one anyway
   gets "No tool named ...".
 - **Rules match the path as written.** With `read * allow`, a symlink in the project read a file outside it with no
   prompt. So all reads ask, and the helper answers `once` only when the resolved path is inside the project and neither
@@ -185,6 +185,19 @@ returned anything looser than the rule, so it is harmless, but it can confuse te
 - A card's code fence has a random name. Approve buttons appear only on that fence, because the model can print a
   `command` block of its own into the same message.
 - A hot reload stops the tab's server but can leave a stale `server.json`. The next start replaces it.
+
+## Found while adding agents and @ mentions (patch 0016)
+
+- **Session rules override the agent's own.** Under `* * ask`, Plan's `edit` was `ask`, not denied. The tab's Plan rules
+  deny `edit` and `shell`, so neither is offered, and that holds inside subagents.
+- **Prompt `files` skip every permission check.** `.env`, files outside the project and symlinks out were all sent to the
+  model with no prompt. The helper resolves each @mention and refuses anything `safe_path` rejects. Folders send a listing only.
+- `GET /api/fs/find?directory=...&query=...` works without git, is ranked, returns folders with a trailing slash, and skips
+  `.env` and symlinks. The helper filters it again anyway.
+- **Subagents** run in child sessions announced by `session.created` with a `parentID`. They inherit the session's rules.
+  The helper follows that family, sends child requests to cards with their own session id, and interrupts children when the
+  turn ends, because `background: true` could outlive it. A denied child fails the subagent, and the parent may carry on and ask for other things.
+- In QML, `onTextChanged` can run before bindings on the same text update. Compute from the text directly.
 
 ## Not tested
 
