@@ -16,7 +16,7 @@ edits, diffs and undo. Existing direct models (NVIDIA, Gemini) must keep working
   and auto mode blocked one anyway.
 - Bind to localhost only. Keys come from the keyring, never from files.
 - Tools stay disabled in the tab until Allow/Deny prompts work (stage 2).
-- `SUPER + A` stays on the OpenCode panel until stage 2 is done, then returns to the sidebar.
+- `SUPER + A` opens the stock left sidebar again (changed by the user 2026-11-04, ahead of stage 2). The panel has no key now.
 - Start folder is `~/dev`, not the home folder, which holds Drive, OneDrive and secrets.
 - The live config sets `"permission": {"*": "ask"}`, so the panel prompts too (decided 2026-11-04, after stage 0 found it allowed nearly everything).
 - Stage 2 allows file reads inside the project without a prompt, and asks for everything else, including `.env` files
@@ -91,10 +91,18 @@ Check the rule in the create response before sending a prompt.
 **Done when** a message streams into the existing bubbles, stop works, and no process is
 left behind.
 
+**Status:** done 2026-11-04 in patch 0014 and `opencode-tab`, tested in the real tab: streaming, stop, Enter
+during a reply, server start on first message, server stop on switching to a direct model, nothing left behind.
+Known issue: the tool chip still says "Functions" on OpenCode models, although tools are off.
+The server starts on the first message, not when a model is picked, so a remembered model cannot
+start it at login. It stops on switching to a direct model, after 15 idle minutes, or with the shell.
+Limits for now: no attachments, a loaded chat or earlier direct-model messages are not sent to OpenCode,
+and regenerate resends into the same session, so the old reply stays in OpenCode's context.
+
 ### Stage 2: safety and tools
 Show Allow/Deny in the chat for every permission request, with the exact command or file.
-Deny on timeout or error, from the client, since the server does not expire requests. Show tool steps such as "Reading file" and edits. Then move
-`SUPER + A` back to the sidebar and retire the panel.
+Deny on timeout or error, from the client, since the server does not expire requests. Show tool steps such as "Reading file" and edits. Then retire
+the panel.
 
 **Done when** nothing but project reads runs without an explicit Allow, proven by a denied edit changing nothing
 and by a read outside the project prompting.
@@ -114,10 +122,14 @@ pill input and better code blocks from the earlier UI list.
   bars (`hyprctl monitors` reserved top 80, not 40). Check `qs list --all`; `pgrep -x qs`
   misses `quickshell`. Kill the older PID.
 - **Reload check:** `Configuration Loaded` count in `qs -c ii log`. The watcher can lag 8s.
+- **`ydotool mousemove --absolute` doubles coordinates here.** Halve them, and check `hyprctl cursorpos` before
+  clicking. Focus follows the mouse, so a stray move changes the active window. Keyboard stays in the open sidebar.
+- **`ls` is aliased to `eza`,** which can hang forever in a script waiting on stdin. Use `command ls`.
 - **`pkill -f` matches your own shell.** Use PIDs. In zsh, `${m}:x` not `$m:x`, and avoid
   bare `===`.
-- **QML:** `pressX` and `icon` are FINAL on Button. Harness tests: `qmltestrunner` with an
-  `Item` root holding a child `Window`, plus a control case.
+- **QML:** `pressX` and `icon` are FINAL on Button. Harness tests: `/usr/lib/qt6/bin/qmltestrunner`
+  (the one on PATH is Qt 5 and prints nothing), with an `Item` root holding a child `Window`, plus a
+  control case that fails on purpose.
 - **Model lists lie.** NVIDIA lists models a key cannot run. Test with the tab's real request.
 - **Store message data before publishing its id** (`Ai.qml` had this backwards).
 - **Commits:** ask before committing or pushing unless told to.

@@ -1,0 +1,334 @@
+--- a/services/Ai.qml
++++ b/services/Ai.qml
+@@ -23,11 +23,16 @@
+     property Component geminiApiStrategy: GeminiApiStrategy {}
+     property Component openaiApiStrategy: OpenAiApiStrategy {}
+     property Component mistralApiStrategy: MistralApiStrategy {}
++    property Component opencodeApiStrategy: OpenCodeApiStrategy {}
+     readonly property string interfaceRole: "interface"
+     readonly property string apiKeyEnvVarName: "API_KEY"
+ 
+     signal responseFinished()
+ 
++    readonly property bool busy: requester.running
++    readonly property string opencodeHelper: `${Quickshell.env("HOME")}/.local/bin/opencode-tab`
++    property bool opencodeServerWanted: false
++
+     property string systemPrompt: {
+         let prompt = Config.options?.ai?.systemPrompt ?? "";
+         for (let key in root.promptSubstitutions) {
+@@ -233,6 +238,9 @@
+             ],
+             "search": [],
+             "none": [],
++        },
++        "opencode": {
++            "none": [],
+         }
+     }
+     property list<var> availableTools: Object.keys(root.tools[models[currentModelId]?.api_format])
+@@ -302,6 +310,7 @@
+         "openai": openaiApiStrategy.createObject(this),
+         "gemini": geminiApiStrategy.createObject(this),
+         "mistral": mistralApiStrategy.createObject(this),
++        "opencode": opencodeApiStrategy.createObject(this, { "helperPath": root.opencodeHelper }),
+     }
+     property ApiStrategy currentApiStrategy: apiStrategies[models[currentModelId]?.api_format || "openai"]
+ 
+@@ -312,6 +321,25 @@
+         });
+     }
+ 
++    function addOpencodeModels() {
++        [
++            ["mistral-large-4", "Mistral Large 4", "mistralai/mistral-large-4-1t-a52b", "mistral-symbolic"],
++            ["minimax-m3.1-flash", "MiniMax M3.1 Flash", "minimaxai/minimax-m3.1-flash", "spark-symbolic"],
++            ["nemotron-3-ultra", "Nemotron 3 Ultra", "nvidia/nemotron-3-ultra-550b-a55b", "spark-symbolic"],
++        ].forEach(([id, name, model, icon]) => {
++            root.addModel(`opencode-${id}`, {
++                "name": `OpenCode: ${name}`,
++                "icon": icon,
++                "description": Translation.tr("Online through OpenCode | Keeps the chat in an OpenCode session. Tools are off for now"),
++                "homepage": "https://opencode.ai",
++                "endpoint": "http://127.0.0.1",
++                "model": `nvidia/${model}`,
++                "requires_key": false, // The helper reads the keyring itself
++                "api_format": "opencode",
++            });
++        });
++    }
++
+     Connections {
+         target: Config
+         function onReadyChanged() {
+@@ -324,6 +352,7 @@
+     property string pendingFilePath: ""
+ 
+     Component.onCompleted: {
++        root.addOpencodeModels()
+         setModel(currentModelId, false, false); // Do necessary setup for model
+         root.addUserModels() // Config onReadyChanged above might not fire if config is loaded before this service
+     }
+@@ -497,6 +526,7 @@
+                 return;
+             }
+             if (setPersistentState) Persistent.states.ai.model = modelId;
++            if (model.api_format !== "opencode" && !root.busy) root.opencodeServerWanted = false;
+             if (feedback) root.addMessage(Translation.tr("Model set to %1").arg(model.name), root.interfaceRole);
+             if (model.requires_key) {
+                 // If key not there show advice
+@@ -571,6 +601,31 @@
+         root.tokenCount.input = -1;
+         root.tokenCount.output = -1;
+         root.tokenCount.total = -1;
++        root.apiStrategies.opencode.newSession();
++    }
++
++    // Runs only after the first OpenCode message, never just because a model is selected,
++    // so a remembered model can't start it at login. Dies with the shell (see opencode-tab).
++    Process {
++        id: opencodeServer
++        running: root.opencodeServerWanted
++        command: [root.opencodeHelper, "serve"]
++        onExited: root.opencodeServerWanted = false
++    }
++
++    Timer {
++        id: opencodeIdleTimer
++        interval: 15 * 60 * 1000
++        onTriggered: {
++            if (root.busy) restart();
++            else root.opencodeServerWanted = false;
++        }
++    }
++
++    function stopResponse() {
++        if (!root.busy) return;
++        requester.stopRequested = true;
++        requester.running = false;
+     }
+ 
+     FileView {
+@@ -582,6 +637,7 @@
+         property list<string> baseCommand: ["bash"]
+         property AiMessageData message
+         property ApiStrategy currentStrategy
++        property bool stopRequested: false
+ 
+         function markDone() {
+             requester.message.done = true;
+@@ -601,6 +657,12 @@
+             
+             requester.currentStrategy = root.currentApiStrategy;
+             requester.currentStrategy.reset(); // Reset strategy state
++            requester.stopRequested = false;
++
++            if (model.api_format === "opencode") {
++                root.opencodeServerWanted = true;
++                opencodeIdleTimer.restart();
++            }
+ 
+             /* Put API key in environment variable */
+             if (model.requires_key) requester.environment[`${root.apiKeyEnvVarName}`] = root.apiKeys ? (root.apiKeys[model.key_id] ?? "") : ""
+@@ -609,7 +671,7 @@
+             const endpoint = root.currentApiStrategy.buildEndpoint(model);
+             const messageArray = root.messageIDs.map(id => root.messageByID[id]);
+             const filteredMessageArray = messageArray.filter(message => message.role !== Ai.interfaceRole);
+-            const data = root.currentApiStrategy.buildRequestData(model, filteredMessageArray, root.systemPrompt, root.temperature, root.tools[model.api_format][root.currentTool], root.pendingFilePath);
++            const data = root.currentApiStrategy.buildRequestData(model, filteredMessageArray, root.systemPrompt, root.temperature, root.tools[model.api_format][root.currentTool] ?? [], root.pendingFilePath);
+             // console.log("[Ai] Request data: ", JSON.stringify(data, null, 2));
+ 
+             let requestHeaders = {
+@@ -654,7 +716,7 @@
+ 
+             /* Create command string */
+             let scriptRequestContent = ""
+-            scriptRequestContent += `curl --no-buffer "${endpoint}"`
++            scriptRequestContent += `exec curl --no-buffer "${endpoint}"` // exec, so the stop button reaches curl
+                 + ` ${headerString}`
+                 + (authHeader ? ` ${authHeader}` : "")
+                 + ` --data '${CF.StringUtils.shellSingleQuoteEscape(JSON.stringify(data))}'`
+@@ -702,6 +764,11 @@
+         }
+ 
+         onExited: (exitCode, exitStatus) => {
++            if (requester.stopRequested && requester.message.content.length === 0) {
++                requester.message.content = Translation.tr("_Stopped._");
++                requester.message.rawContent = requester.message.content;
++            }
++            requester.message.thinking = false;
+             const result = requester.currentStrategy.onRequestFinished(requester.message);
+             
+             if (result.finished) {
+@@ -718,7 +785,7 @@
+     }
+ 
+     function sendUserMessage(message) {
+-        if (message.length === 0) return;
++        if (message.length === 0 || root.busy) return;
+         root.addMessage(message, "user");
+         requester.makeRequest();
+     }
+@@ -728,7 +795,7 @@
+     }
+ 
+     function regenerate(messageIndex) {
+-        if (messageIndex < 0 || messageIndex >= messageIDs.length) return;
++        if (root.busy || messageIndex < 0 || messageIndex >= messageIDs.length) return;
+         const id = root.messageIDs[messageIndex];
+         const message = root.messageByID[id];
+         if (message.role !== "assistant") return;
+--- a/modules/ii/sidebarLeft/AiChat.qml
++++ b/modules/ii/sidebarLeft/AiChat.qml
+@@ -669,8 +669,10 @@
+                                     suggestions.chooseSelectedModel();
+                                     event.accepted = true;
+                                 } else {
+-                                    // Accept text
++                                    // Accept text. While a reply runs, keep a message in the box
+                                     const inputText = messageInputField.text;
++                                    event.accepted = true;
++                                    if (Ai.busy && !inputText.startsWith(root.commandPrefix)) return;
+                                     messageInputField.clear();
+                                     root.handleInput(inputText);
+                                     event.accepted = true;
+@@ -718,13 +720,17 @@
+                     implicitWidth: 40
+                     implicitHeight: 40
+                     buttonRadius: Appearance.rounding.small
+-                    enabled: messageInputField.text.length > 0
++                    enabled: Ai.busy || messageInputField.text.length > 0
+                     toggled: enabled
+ 
+                     MouseArea {
+                         anchors.fill: parent
+                         cursorShape: sendButton.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                         onClicked: {
++                            if (Ai.busy) {
++                                Ai.stopResponse();
++                                return;
++                            }
+                             const inputText = messageInputField.text;
+                             root.handleInput(inputText);
+                             messageInputField.clear();
+@@ -736,7 +742,7 @@
+                         horizontalAlignment: Text.AlignHCenter
+                         iconSize: 22
+                         color: sendButton.enabled ? Appearance.m3colors.m3onPrimary : Appearance.colors.colOnLayer2Disabled
+-                        text: "arrow_upward"
++                        text: Ai.busy ? "stop" : "arrow_upward"
+                     }
+                 }
+             }
+--- /dev/null
++++ b/services/ai/OpenCodeApiStrategy.qml
+@@ -0,0 +1,109 @@
++import QtQuick
++
++/**
++ * Talks to OpenCode through the opencode-tab helper, which prints one JSON event per line.
++ * OpenCode keeps the conversation in a session, so only the newest message is sent.
++ * Tools are off: the helper refuses any session without its deny rule.
++ */
++ApiStrategy {
++    property string helperPath: ""
++    property string sessionId: ""
++    property string pendingText: ""
++    property string pendingModel: ""
++    property bool fileSkipped: false
++    property bool isReasoning: false
++    property bool hasText: false
++
++    function buildEndpoint(model: AiModel): string {
++        return model.endpoint;
++    }
++
++    function buildRequestData(model: AiModel, messages, systemPrompt: string, temperature: real, tools: list<var>, filePath: string) {
++        const userMessages = messages.filter(message => message.role === "user");
++        pendingText = userMessages.length > 0 ? userMessages[userMessages.length - 1].rawContent : "";
++        pendingModel = model.model;
++        fileSkipped = filePath.length > 0;
++        return {};
++    }
++
++    function buildAuthorizationHeader(apiKeyEnvVarName: string): string {
++        return "";
++    }
++
++    function shellQuote(text) {
++        return `'${text.replace(/'/g, "'\\''")}'`;
++    }
++
++    // The request is the helper, not curl. The message goes on stdin, so it has no size
++    // limit and stays out of the process list. exec lets the stop button reach the helper.
++    function finalizeScriptContent(scriptContent: string): string {
++        let delimiter = "OPENCODE_TAB_END";
++        while (pendingText.includes(delimiter)) delimiter += "_X";
++        return "#!/usr/bin/env bash\n"
++            + `exec ${shellQuote(helperPath)} send ${shellQuote(pendingModel)} ${shellQuote(sessionId)} <<'${delimiter}'\n`
++            + `${pendingText}\n${delimiter}\n`;
++    }
++
++    function add(message, text) {
++        message.content += text;
++        message.rawContent += text;
++    }
++
++    function endReasoning(message) {
++        if (!isReasoning) return;
++        isReasoning = false;
++        add(message, "\n\n</think>\n\n");
++    }
++
++    function parseResponseLine(line, message) {
++        const event = JSON.parse(line);
++        if (fileSkipped) {
++            fileSkipped = false;
++            add(message, `_${qsTr("The attached file was not sent: OpenCode models do not take attachments here yet.")}_\n\n`);
++        }
++        switch (event.type) {
++        case "session":
++            sessionId = event.id;
++            return {};
++        case "reasoning":
++            if (!isReasoning) {
++                isReasoning = true;
++                add(message, "\n\n<think>\n\n");
++            }
++            add(message, event.delta);
++            return {};
++        case "text":
++            endReasoning(message);
++            hasText = true;
++            add(message, event.delta);
++            return {};
++        case "usage": {
++            const input = event.tokens?.input ?? -1;
++            const output = event.tokens?.output ?? -1;
++            return { tokenUsage: { input: input, output: output, total: input + output } };
++        }
++        case "succeeded":
++            endReasoning(message);
++            if (!hasText) add(message, `_${qsTr("The model finished without writing a reply.")}_`);
++            return { finished: true };
++        case "interrupted":
++            endReasoning(message);
++            if (!hasText) add(message, `_${qsTr("Stopped.")}_`);
++            return { finished: true };
++        case "failed":
++            endReasoning(message);
++            add(message, `**${qsTr("Error")}**: ${event.error}`);
++            return { finished: true };
++        }
++        return {};
++    }
++
++    function reset() {
++        isReasoning = false;
++        hasText = false;
++    }
++
++    function newSession() {
++        sessionId = "";
++    }
++}
