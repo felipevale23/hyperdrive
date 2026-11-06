@@ -1,0 +1,106 @@
+diff --git a/GlobalStates.qml b/GlobalStates.qml
+index f1d200b..f2cf9b1 100644
+--- a/GlobalStates.qml
++++ b/GlobalStates.qml
+@@ -13,6 +13,7 @@ Singleton {
+     property bool barOpen: true
+     property bool crosshairOpen: false
+     property bool sidebarLeftOpen: false
++    property bool sidebarLeftPinned: false
+     property bool sidebarRightOpen: false
+     property bool mediaControlsOpen: false
+     // Screen-space X and width of the bar's Media widget, so the media controls
+diff --git a/modules/ii/sidebarLeft/SidebarLeft.qml b/modules/ii/sidebarLeft/SidebarLeft.qml
+index a57aef8..3f12126 100644
+--- a/modules/ii/sidebarLeft/SidebarLeft.qml
++++ b/modules/ii/sidebarLeft/SidebarLeft.qml
+@@ -15,6 +15,8 @@ Scope { // Scope
+     property Component contentComponent: SidebarLeftContent {}
+     property Item sidebarContent
+ 
++    onPinChanged: GlobalStates.sidebarLeftPinned = root.pin
++
+     function toggleDetach() {
+         root.detach = !root.detach;
+     }
+@@ -114,17 +116,25 @@ Scope { // Scope
+                 item: sidebarLeftBackground
+             }
+ 
+-            onVisibleChanged: {
+-                if (visible) {
++            // A pinned sidebar stays out of the focus grab, so using other windows doesn't close it
++            function updateFocusGrab() {
++                if (panelWindow.visible && !root.pin) {
+                     GlobalFocusGrab.addDismissable(panelWindow);
+                 } else {
+                     GlobalFocusGrab.removeDismissable(panelWindow);
+                 }
+             }
++            onVisibleChanged: updateFocusGrab()
++            Connections {
++                target: root
++                function onPinChanged() {
++                    panelWindow.updateFocusGrab();
++                }
++            }
+             Connections {
+                 target: GlobalFocusGrab
+                 function onDismissed() {
+-                    panelWindow.hide();
++                    if (!root.pin) panelWindow.hide();
+                 }
+             }
+ 
+diff --git a/modules/ii/sidebarLeft/aiChat/AnnotationSourceButton.qml b/modules/ii/sidebarLeft/aiChat/AnnotationSourceButton.qml
+index 828cc03..22b26ee 100644
+--- a/modules/ii/sidebarLeft/aiChat/AnnotationSourceButton.qml
++++ b/modules/ii/sidebarLeft/aiChat/AnnotationSourceButton.qml
+@@ -23,7 +23,7 @@ RippleButton {
+     onClicked: {
+         if (url) {
+             Qt.openUrlExternally(url)
+-            GlobalStates.sidebarLeftOpen = false
++            if (!GlobalStates.sidebarLeftPinned) GlobalStates.sidebarLeftOpen = false
+         }
+     }
+ 
+diff --git a/modules/ii/sidebarLeft/aiChat/MessageTextBlock.qml b/modules/ii/sidebarLeft/aiChat/MessageTextBlock.qml
+index de508e1..fbf2a8d 100644
+--- a/modules/ii/sidebarLeft/aiChat/MessageTextBlock.qml
++++ b/modules/ii/sidebarLeft/aiChat/MessageTextBlock.qml
+@@ -170,7 +170,7 @@ ColumnLayout {
+ 
+             onLinkActivated: (link) => {
+                 Qt.openUrlExternally(link)
+-                GlobalStates.sidebarLeftOpen = false
++                if (!GlobalStates.sidebarLeftPinned) GlobalStates.sidebarLeftOpen = false
+             }
+ 
+             MouseArea { // Pointing hand for links
+diff --git a/modules/ii/sidebarLeft/aiChat/SearchQueryButton.qml b/modules/ii/sidebarLeft/aiChat/SearchQueryButton.qml
+index 1c1d036..090079d 100644
+--- a/modules/ii/sidebarLeft/aiChat/SearchQueryButton.qml
++++ b/modules/ii/sidebarLeft/aiChat/SearchQueryButton.qml
+@@ -26,7 +26,7 @@ RippleButton {
+             url += ` -site:${site}`;
+         }
+         Qt.openUrlExternally(url);
+-        GlobalStates.sidebarLeftOpen = false;
++        if (!GlobalStates.sidebarLeftPinned) GlobalStates.sidebarLeftOpen = false;
+     }
+ 
+     contentItem: Item {
+diff --git a/modules/ii/sidebarLeft/anime/BooruResponse.qml b/modules/ii/sidebarLeft/anime/BooruResponse.qml
+index 57e4247..3e1334e 100644
+--- a/modules/ii/sidebarLeft/anime/BooruResponse.qml
++++ b/modules/ii/sidebarLeft/anime/BooruResponse.qml
+@@ -151,7 +151,7 @@ Rectangle {
+             textFormat: Text.MarkdownText
+             onLinkActivated: (link) => {
+                 Qt.openUrlExternally(link)
+-                GlobalStates.sidebarLeftOpen = false
++                if (!GlobalStates.sidebarLeftPinned) GlobalStates.sidebarLeftOpen = false
+             }
+             PointingHandLinkHover {}
+         }
