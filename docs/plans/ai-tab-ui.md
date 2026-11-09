@@ -76,26 +76,38 @@ card, a failed step that opens by itself, `/approve`, and the turn fits one scre
 - Unit tests: `tst_opencode.qml` and `tst_blocks.mjs`. A real model refused to print a fake card, so only the parser tests prove that case.
 - Not checked on screen: Tab focus on the card's buttons, Copy on a message with blocks, a saved chat, a subagent card.
 
-### Step 2: polish (patch `0020`)
+### Step 2: polish (patch `0026`)
 
 1. **Status pill** covers messages on scroll. On OpenCode models, take it out of the overlay. Tokens move to the Context panel in Part 2.
    Until then, reserve its height so it can't overlap.
 2. **Diff cards.** The filename becomes the header, with `+3 −1`. Drop the `Index:` and `=====` lines in the strategy, not in the helper,
    because `/undo` needs the patch whole. Add a change marker, so diffs don't rely on red and green alone.
 3. **Scroll to bottom.** Use a quieter colour role and an icon only, placed so it doesn't cover the last line.
-4. **Bottom row.** Four chips plus `/clear` only just fit, and `/` is already hidden. Measure with the longest model name and at 460 px.
+4. **Bottom row.** Patch `0021` widened the left sidebar to 560 px, so all chips and `/` fit. Check the row with the longest model and folder names.
    Suggested: move Tool into the `/` menu, since it rarely changes.
 
 5. **Contrast.** Replace `colSubtext` on text in the tab with `colOnSurfaceVariant`, as Step 1 did for its blocks.
 
 **Done when** nothing overlaps or clips at 460 and 750 px, measured contrast passes, and every control has a hover state and a tooltip.
 
-### Step 3: `/resume` keeps the whole story (patch `0021`)
+### Step 3: `/resume` keeps the whole story (patch `0027`)
 
 `messages()` in the helper drops tool parts, so a denied turn comes back as a question with no answer. Return tool parts and rebuild
 steps and answered cards from them. Old cards must come back answered and can't be actionable.
 
 **Done when** a resumed chat matches the original, and no card from history can be approved.
+
+## Subagent robots (patch `0020`, done 2026-11-05)
+
+Each subagent gets a live row under the reply: a pixel art robot, its job, what it's doing, its model and tokens.
+
+- `PixelRobot.qml` draws three 14 by 14 sprites on a `Canvas` in theme colours: `general`, `explore`, and `other` for custom agents.
+  States: working (two frames), waiting (question mark, red antenna), done (happy eyes), failed or stopped (grey, red eyes).
+- The rows live in `message.subagents`, not the text, so a model can't print one and they update without touching the markdown.
+- Events, all checked on a server: `session.created` with `parentID` gives `agent` and `title`, `session.step.started` gives `model`,
+  `session.usage.updated` gives tokens, and the child's terminal event gives the end state. The helper turns these into `agent` events.
+- A finished row stays finished, and anything still running when the turn ends shows stopped.
+- Not done: stopping one subagent, `/agents`, opening one to read its messages. `/resume` loses the rows, like the rest of Step 3.
 
 ## Part 2: OpenCode web in the tab
 
@@ -121,7 +133,7 @@ The tab keeps its role as a sidebar. It gets what you'd open the web app for, no
 | Providers, servers, plugins, integrations, export | Not in the tab. Keep using the web app or config | Keys stay in the keyring | Out |
 | Theme, fonts, shortcuts, notifications, language | Not needed: the shell owns these | | Out |
 
-### Step 4: panels (patch `0022`)
+### Step 4: panels (patch `0028`)
 
 A `SecondaryTabBar` under the header, shown only on OpenCode models. Direct models keep today's layout.
 
@@ -143,14 +155,14 @@ At the 750 px width (`Ctrl+O`), Changes and Files can show a list beside the con
 
 **Done when** panels switch by mouse and keyboard, the open chat survives switching, and direct models look unchanged.
 
-### Step 5: Chats panel (patch `0023`)
+### Step 5: Chats panel (patch `0029`)
 
 Replaces typing `/history` and `/resume N`. Chats grouped by folder, newest first, with a search box. Click to resume, and the folder comes
 with it. Rename through `PATCH /api/session/{id}`. Delete asks first and removes the journal. Keep the commands working.
 
 **Done when** the test chats can be deleted from the panel, and a chat in another folder opens with the right chip.
 
-### Step 6: Changes panel (patch `0024`)
+### Step 6: Changes panel (patch `0030`)
 
 The files this chat changed, each opening its diff, with undo for the last turn. In a git repo, a second view shows all uncommitted changes
 from `GET /api/vcs/diff`. In a plain folder only the chat's own view exists, because OpenCode has no snapshots there. Read-only otherwise:
@@ -158,13 +170,13 @@ no stage or commit buttons.
 
 **Done when** the numbers match `git diff` in a repo, and a plain folder shows the chat's changes with a clear note.
 
-### Step 7: Context panel (patch `0025`)
+### Step 7: Context panel (patch `0031`)
 
 Tokens against the model's limit, cost, model and agent, folder, and the todo list. Tokens leave the status pill here.
 
 **Done when** totals match the session in `opencode.db`.
 
-### Step 8: Files panel (patch `0026`)
+### Step 8: Files panel (patch `0032`)
 
 A tree of the chat's folder, a read-only viewer using the code block, and search. A click on "Add to message" inserts an `@` mention, so
 the normal checks run. New helper commands `list` and `read`, both limited by `safe_path`. Private files show with a padlock and no content.

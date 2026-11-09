@@ -1,0 +1,47 @@
+diff --git a/modules/common/Appearance.qml b/modules/common/Appearance.qml
+index 6afd824..a129320 100644
+--- a/modules/common/Appearance.qml
++++ b/modules/common/Appearance.qml
+@@ -404,6 +404,7 @@ Singleton {
+         property real searchWidthCollapsed: 210
+         property real searchWidth: 360
+         property real sidebarWidth: 460
++        property real sidebarLeftWidth: 560 // Fits every AI tab chip on one row
+         property real sidebarWidthExtended: 750
+         property real baseVerticalBarWidth: 46
+         property real verticalBarWidth: Config.options.bar.cornerStyle === 1 ? 
+diff --git a/modules/ii/sidebarLeft/AiChat.qml b/modules/ii/sidebarLeft/AiChat.qml
+index 517be50..59245db 100644
+--- a/modules/ii/sidebarLeft/AiChat.qml
++++ b/modules/ii/sidebarLeft/AiChat.qml
+@@ -899,7 +899,7 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+                     visible: Ai.opencodeModel
+                     icon: "folder"
+                     readonly property string folderName: Ai.opencodeFolder.length > 0 ? Ai.opencodeFolder.split("/").pop() : ".agents"
+-                    text: folderName.length > 10 ? `${folderName.slice(0, 9)}…` : folderName
++                    text: folderName.length > 18 ? `${folderName.slice(0, 17)}…` : folderName
+                     tooltipText: Translation.tr("Project folder: %1\nClick to choose another").arg(Ai.opencodeFolder.length > 0 ? Ai.opencodeFolder : "~/.agents")
+                     onClicked: {
+                         messageInputField.text = `${root.commandPrefix}project `;
+@@ -925,7 +925,7 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+ 
+                     Repeater {
+                         // Command buttons
+-                        model: Ai.opencodeModel ? commandButtonsRow.commandsShown.slice(1) : commandButtonsRow.commandsShown // No room for "/" beside the folder chip
++                        model: commandButtonsRow.commandsShown
+                         delegate: ApiCommandButton {
+                             property string commandRepresentation: `${root.commandPrefix}${modelData.name}`
+                             buttonText: commandRepresentation
+diff --git a/modules/ii/sidebarLeft/SidebarLeft.qml b/modules/ii/sidebarLeft/SidebarLeft.qml
+index 4e01565..a57aef8 100644
+--- a/modules/ii/sidebarLeft/SidebarLeft.qml
++++ b/modules/ii/sidebarLeft/SidebarLeft.qml
+@@ -89,7 +89,7 @@ Scope { // Scope
+             visible: GlobalStates.sidebarLeftOpen
+             
+             property bool extend: false
+-            property real sidebarWidth: panelWindow.extend ? Appearance.sizes.sidebarWidthExtended : Appearance.sizes.sidebarWidth
++            property real sidebarWidth: panelWindow.extend ? Appearance.sizes.sidebarWidthExtended : Appearance.sizes.sidebarLeftWidth
+             property var contentParent: sidebarLeftBackground
+ 
+             function hide() {

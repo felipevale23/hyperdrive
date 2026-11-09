@@ -1,0 +1,447 @@
+diff --git a/modules/ii/sidebarLeft/aiChat/AiMessage.qml b/modules/ii/sidebarLeft/aiChat/AiMessage.qml
+index b4fe045..1d03d0a 100644
+--- a/modules/ii/sidebarLeft/aiChat/AiMessage.qml
++++ b/modules/ii/sidebarLeft/aiChat/AiMessage.qml
+@@ -201,6 +201,17 @@ Rectangle {
+             }
+         }
+ 
++        Repeater { // This turn's subagents. Not part of the text, so a model can't print one
++            model: ScriptModel {
++                values: root.messageData?.subagents ?? []
++                objectProp: "id"
++            }
++            delegate: MessageSubagentRow {
++                required property var modelData
++                agent: modelData
++            }
++        }
++
+         StyledText { // What OpenCode is doing right now
+             visible: (root.messageData?.systemFence?.length ?? 0) > 0 && !(root.messageData?.done ?? true)
+                 && root.messageBlocks.length > 0 && (root.messageData?.permissionFence?.length ?? 0) === 0
+diff --git a/modules/ii/sidebarLeft/aiChat/MessageSubagentRow.qml b/modules/ii/sidebarLeft/aiChat/MessageSubagentRow.qml
+new file mode 100644
+index 0000000..b19c1d1
+--- /dev/null
++++ b/modules/ii/sidebarLeft/aiChat/MessageSubagentRow.qml
+@@ -0,0 +1,101 @@
++import qs.services
++import qs.modules.common
++import qs.modules.common.widgets
++import QtQuick
++import QtQuick.Layouts
++
++/**
++ * One subagent, live: its robot, its job and how it's going. Plain text, because the task comes from the model.
++ */
++Rectangle {
++    id: root
++    property var agent: ({})
++    readonly property string name: agent.name ?? ""
++    readonly property string stateText: {
++        switch (agent.state) {
++        case "waiting": return Translation.tr("Waiting for you");
++        case "done": return Translation.tr("Done");
++        case "failed": return Translation.tr("Failed");
++        case "stopped": return Translation.tr("Stopped");
++        }
++        return Translation.tr("Working");
++    }
++    readonly property string details: {
++        if (agent.activity?.length > 0) return `${agent.activity}…`;
++        const parts = [];
++        if (agent.model?.length > 0) parts.push(agent.model.split("/").pop());
++        if (agent.tokens > 0) parts.push(Translation.tr("%1 tokens").arg(agent.tokens));
++        return parts.join(", ");
++    }
++
++    Layout.fillWidth: true
++    Layout.topMargin: 2
++    Layout.bottomMargin: 2
++    implicitHeight: Math.max(robot.implicitHeight, textColumn.implicitHeight) + 8 * 2
++    radius: Appearance.rounding.small
++    color: Appearance.colors.colLayer2
++    Accessible.name: `${root.name}: ${root.stateText}. ${root.agent.task ?? ""}`
++
++    RowLayout {
++        anchors {
++            left: parent.left
++            right: parent.right
++            verticalCenter: parent.verticalCenter
++            leftMargin: 10
++            rightMargin: 12
++        }
++        spacing: 12
++
++        PixelRobot {
++            id: robot
++            Layout.alignment: Qt.AlignVCenter
++            kind: root.name === "general" || root.name === "explore" ? root.name : "other"
++            state: root.agent.state ?? "running"
++        }
++
++        ColumnLayout {
++            id: textColumn
++            Layout.fillWidth: true
++            spacing: 1
++
++            RowLayout {
++                Layout.fillWidth: true
++                spacing: 8
++                StyledText {
++                    Layout.fillWidth: true
++                    textFormat: Text.PlainText
++                    elide: Text.ElideRight
++                    font.pixelSize: Appearance.font.pixelSize.small
++                    font.weight: Font.DemiBold
++                    color: Appearance.colors.colOnLayer2
++                    text: root.name.length > 0 ? root.name.charAt(0).toUpperCase() + root.name.slice(1) : Translation.tr("Subagent")
++                }
++                StyledText {
++                    font.pixelSize: Appearance.font.pixelSize.smaller
++                    color: Appearance.colors.colOnSurfaceVariant
++                    text: root.stateText
++                }
++            }
++            StyledText { // The job it was given
++                visible: text.length > 0
++                Layout.fillWidth: true
++                textFormat: Text.PlainText
++                wrapMode: Text.Wrap
++                maximumLineCount: 2
++                elide: Text.ElideRight
++                font.pixelSize: Appearance.font.pixelSize.smaller
++                color: Appearance.colors.colOnSurfaceVariant
++                text: root.agent.task ?? ""
++            }
++            StyledText { // What it's doing now, or what it used
++                visible: text.length > 0
++                Layout.fillWidth: true
++                textFormat: Text.PlainText
++                elide: Text.ElideMiddle
++                font.pixelSize: Appearance.font.pixelSize.smaller
++                color: Appearance.colors.colOnSurfaceVariant
++                text: root.details
++            }
++        }
++    }
++}
+diff --git a/modules/ii/sidebarLeft/aiChat/PixelRobot.qml b/modules/ii/sidebarLeft/aiChat/PixelRobot.qml
+new file mode 100644
+index 0000000..2b8eba9
+--- /dev/null
++++ b/modules/ii/sidebarLeft/aiChat/PixelRobot.qml
+@@ -0,0 +1,192 @@
++import qs.modules.common
++import QtQuick
++
++/**
++ * A small pixel art robot, one kind per subagent type, drawn from the sprites below in theme colours.
++ * A 14 by 14 grid plus one row above for the question mark. It only animates while it has something to show.
++ * O outline, B body, H highlight, D shade, F face, A antenna.
++ */
++Canvas {
++    id: root
++    property string kind: "general"
++    property string state: "running" // running, waiting, done, failed or stopped
++    property int pixel: 3
++    property int frame: 0
++
++    readonly property var sprite: sprites[kind] ?? sprites["other"]
++    readonly property bool active: state === "running" || state === "waiting"
++    readonly property bool off: state === "failed" || state === "stopped"
++    readonly property color colBody: off ? Appearance.colors.colOutline
++        : (kind === "general" ? Appearance.m3colors.m3primary : (kind === "explore" ? Appearance.m3colors.m3tertiary : Appearance.m3colors.m3secondary))
++    readonly property color colEye: off ? Appearance.colors.colError : Appearance.colors.colOnLayer1
++
++    readonly property var sprites: ({
++        "general": {
++            "eyes": [[4, 6], [8, 6]],
++            "eyeSize": 2,
++            "frames": [[
++                "......AA......",
++                "......OO......",
++                "..OOOOOOOOOO..",
++                ".OBBBBBBBBBBO.",
++                ".OBHHHHHHHHBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBBBBBBBBBBO.",
++                "..OOOOOOOOOO..",
++                "OO.OBDDDDBO.OO",
++                "OB.OBBBBBBO.BO",
++                "...OO....OO..."],
++                [
++                "......AA......",
++                "......OO......",
++                "..OOOOOOOOOO..",
++                ".OBBBBBBBBBBO.",
++                ".OBHHHHHHHHBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBBBBBBBBBBO.",
++                "OBOOOOOOOOOOBO",
++                "OO.OBDDDDBO.OO",
++                "...OBBBBBBO...",
++                "...OO....OO..."]]
++        },
++        "explore": {
++            "eyes": [[5, 6]],
++            "eyeSize": 4,
++            "frames": [[
++                "...AAAAAAAA...",
++                "......OO......",
++                "....OOOOOO....",
++                "...OBHHHHBO...",
++                "..OBBBBBBBBO..",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                "..OBBBBBBBBO..",
++                "...ODDDDDDO...",
++                "....OOOOOO....",
++                ".....O..O.....",
++                "....OO..OO...."],
++                [
++                ".....AAAA.....",
++                "......OO......",
++                "....OOOOOO....",
++                "...OBHHHHBO...",
++                "..OBBBBBBBBO..",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                "..OBBBBBBBBO..",
++                "...ODDDDDDO...",
++                "....OOOOOO....",
++                "......OO......",
++                ".....OOOO....."]]
++        },
++        "other": {
++            "eyes": [[4, 6], [8, 6]],
++            "eyeSize": 2,
++            "frames": [[
++                ".A..........A.",
++                ".O..........O.",
++                ".OOOOOOOOOOOO.",
++                ".OBHHHHHHHHBO.",
++                ".OBBBBBBBBBBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBBBBBBBBBBO.",
++                ".OOOOOOOOOOOO.",
++                "...OBDDDDBO...",
++                ".OOOOOOOOOOOO.",
++                ".ODODODODODOD."],
++                [
++                ".A..........A.",
++                ".O..........O.",
++                ".OOOOOOOOOOOO.",
++                ".OBHHHHHHHHBO.",
++                ".OBBBBBBBBBBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBBBBBBBBBBO.",
++                ".OOOOOOOOOOOO.",
++                "...OBDDDDBO...",
++                ".OOOOOOOOOOOO.",
++                ".DODODODODODO."]]
++        }
++    })
++
++    implicitWidth: 14 * pixel
++    implicitHeight: 15 * pixel
++    onFrameChanged: requestPaint()
++    onStateChanged: requestPaint()
++    onColBodyChanged: requestPaint()
++    onColEyeChanged: requestPaint()
++    onKindChanged: requestPaint()
++
++    Timer {
++        running: root.active && root.visible
++        interval: 450
++        repeat: true
++        onTriggered: root.frame = 1 - root.frame
++    }
++
++    onPaint: {
++        const ctx = getContext("2d");
++        ctx.clearRect(0, 0, width, height);
++        const dot = (x, y, color) => {
++            ctx.fillStyle = color;
++            ctx.fillRect(x * pixel, (y + 1) * pixel, pixel, pixel);
++        };
++        const colors = {
++            "O": Qt.darker(colBody, 2),
++            "B": colBody,
++            "H": Qt.lighter(colBody, 1.25),
++            "D": Qt.darker(colBody, 1.4),
++            "F": Appearance.colors.colLayer0,
++            "A": state === "waiting" ? Appearance.colors.colError : Qt.lighter(colBody, 1.4),
++        };
++        const rows = sprite.frames[state === "running" ? frame : 0];
++        rows.forEach((row, y) => {
++            for (let x = 0; x < row.length; x++) {
++                if (colors[row[x]]) dot(x, y, colors[row[x]]);
++            }
++        });
++        const size = sprite.eyeSize;
++        sprite.eyes.forEach(eye => {
++            const ex = eye[0];
++            const ey = eye[1];
++            if (off) {
++                for (let i = 0; i < size; i++) dot(ex + i, ey + 1, colEye);
++            } else if (state === "done") {
++                dot(ex, ey + 1, colEye);
++                dot(ex + size - 1, ey + 1, colEye);
++                for (let i = 1; i < size - 1; i++) dot(ex + i, ey, colEye);
++                if (size === 2) dot(ex + 1, ey, colEye);
++            } else if (state === "waiting") {
++                for (let i = 0; i < size; i++) {
++                    dot(ex + i, ey - 1, colEye);
++                    dot(ex + i, ey, colEye);
++                }
++            } else { // Looking around
++                const shift = size === 2 ? -frame : frame * 2;
++                for (let i = 0; i < 2; i++) {
++                    dot(ex + i + shift, ey, colEye);
++                    dot(ex + i + shift, ey + 1, colEye);
++                }
++            }
++        });
++        if (state === "waiting") {
++            [[11, -1], [12, -1], [13, -1], [13, 0], [12, 1], [12, 3]].forEach(point => dot(point[0], point[1], colEye));
++        }
++    }
++}
+diff --git a/services/Ai.qml b/services/Ai.qml
+index a5f68e9..7ef1774 100644
+--- a/services/Ai.qml
++++ b/services/Ai.qml
+@@ -1118,6 +1118,7 @@ Singleton {
+                 "role": message.role,
+                 "rawContent": message.rawContent,
+                 "systemFence": message.systemFence,
++                "subagents": message.subagents,
+                 "fileMimeType": message.fileMimeType,
+                 "fileUri": message.fileUri,
+                 "localFilePath": message.localFilePath,
+@@ -1175,6 +1176,7 @@ Singleton {
+                     "rawContent": message.rawContent,
+                     "content": message.rawContent,
+                     "systemFence": message.systemFence ?? "",
++                    "subagents": message.subagents ?? [],
+                     "fileMimeType": message.fileMimeType,
+                     "fileUri": message.fileUri,
+                     "localFilePath": message.localFilePath,
+diff --git a/services/ai/AiMessageData.qml b/services/ai/AiMessageData.qml
+index c4caac7..37f38da 100644
+--- a/services/ai/AiMessageData.qml
++++ b/services/ai/AiMessageData.qml
+@@ -23,5 +23,6 @@ QtObject {
+     property string permissionFence // Name of the code fence holding a live OpenCode permission card
+     property string systemFence // Random fence for what OpenCode's tab says itself, so a model can't print the same thing
+     property string currentStep // What OpenCode is doing right now
++    property var subagents: [] // One row per subagent: id, name, task, model, state, activity, tokens
+     property bool visibleToUser: true
+ }
+diff --git a/services/ai/OpenCodeApiStrategy.qml b/services/ai/OpenCodeApiStrategy.qml
+index 2259caf..59d54e6 100644
+--- a/services/ai/OpenCodeApiStrategy.qml
++++ b/services/ai/OpenCodeApiStrategy.qml
+@@ -87,6 +87,23 @@ ApiStrategy {
+         addBlock(message, { "kind": "note", "icon": icon, "text": text, "tone": tone ?? "" });
+     }
+ 
++    // A new array each time, so the rows update. A finished subagent stays finished, whatever arrives late
++    function updateSubagent(message, id, changes) {
++        const finished = ["done", "failed", "stopped"];
++        const known = message.subagents.some(agent => agent.id === id);
++        const list = known ? message.subagents : [...message.subagents, { "id": id, "name": "", "task": "", "model": "", "state": "running", "activity": "", "tokens": 0 }];
++        message.subagents = list.map(agent => {
++            if (agent.id !== id) return agent;
++            const update = Object.assign({}, agent, changes);
++            if (finished.includes(agent.state)) update.state = agent.state;
++            return update;
++        });
++    }
++
++    function stopSubagents(message) {
++        message.subagents.forEach(agent => updateSubagent(message, agent.id, { "state": "stopped", "activity": "" }));
++    }
++
+     function endReasoning(message) {
+         if (!isReasoning) return;
+         isReasoning = false;
+@@ -138,7 +155,8 @@ ApiStrategy {
+         const resources = request.resources ?? [];
+         const named = ["edit", "write", "read"].includes(request.action) && resources.length === 1 && !resources[0].includes("\n");
+         const extra = request.patch?.length > 0 ? request.patch : (request.detail ?? "");
+-        const body = [named ? "" : resources.join("\n"), extra].filter(part => part.length > 0).join("\n");
++        const listed = named || (request.action === "subagent" && extra.length > 0); // The detail already says which agent
++        const body = [listed ? "" : resources.join("\n"), extra].filter(part => part.length > 0).join("\n");
+         return {
+             "kind": "card",
+             "title": qsTr("%1 wants to %2").arg(request.subagent ? qsTr("A subagent") : "OpenCode").arg(describe(request.action, named ? resources[0] : "")),
+@@ -228,13 +246,22 @@ ApiStrategy {
+             if (event.files.length > 0) addNote(message, "attach_file", qsTr("Attached: %1").arg(event.files.join(", ")));
+             if (event.refused.length > 0) addNote(message, "block", qsTr("Not attached, outside the project or a private file: %1").arg(event.refused.join(", ")), "error");
+             return {};
++        case "agent": {
++            const changes = Object.assign({}, event);
++            delete changes.type;
++            if (["done", "failed", "stopped"].includes(event.state)) changes.activity = "";
++            updateSubagent(message, event.id, changes);
++            return {};
++        }
+         case "permission":
++            if (event.subagent) updateSubagent(message, event.session, { "state": "waiting" });
+             queuedRequests = [...queuedRequests, event];
+             showNextRequest(message);
+             return {};
+         case "permission_replied": {
+             const allowed = event.reply === "once";
+             if (!allowed) turnExplained = true;
++            if (event.session !== sessionId && message.subagents.some(agent => agent.id === event.session)) updateSubagent(message, event.session, { "state": "running" });
+             if (event.id === activeRequest) {
+                 closeCard(message, allowed ? "allowed" : "denied", allowed ? qsTr("Allowed") : (event.timeout ? qsTr("Denied: no answer in time") : qsTr("Denied")));
+             } else {
+@@ -246,10 +273,12 @@ ApiStrategy {
+         case "step":
+             endReasoning(message);
+             message.currentStep = stepText(event, true);
++            if (event.subagent) updateSubagent(message, event.session, { "activity": stepText(Object.assign({}, event, { "subagent": false }), true) });
+             return {};
+         case "tool":
+             endReasoning(message);
+             message.currentStep = "";
++            if (event.subagent) updateSubagent(message, event.session, { "activity": "" });
+             if (!event.denied) addBlock(message, { "kind": "tool", "name": event.name, "text": stepText(event, false), "ok": event.ok, "error": event.error ?? "" });
+             return {};
+         case "usage": {
+@@ -277,12 +306,14 @@ ApiStrategy {
+         clearRequests(message);
+         endReasoning(message);
+         message.currentStep = "";
++        stopSubagents(message);
+     }
+ 
+     // Runs when the helper exits, which is the only sign of a stop button press
+     function onRequestFinished(message) {
+         clearRequests(message);
+         message.currentStep = "";
++        stopSubagents(message);
+         return {};
+     }
+ 
