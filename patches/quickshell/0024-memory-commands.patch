@@ -1,0 +1,54 @@
+diff --git a/modules/ii/sidebarLeft/AiChat.qml b/modules/ii/sidebarLeft/AiChat.qml
+index 8c41589..6e26b7f 100644
+--- a/modules/ii/sidebarLeft/AiChat.qml
++++ b/modules/ii/sidebarLeft/AiChat.qml
+@@ -78,6 +78,21 @@ Item {
+             description: Translation.tr("List past OpenCode chats"),
+             execute: () => root.opencodeOnly(() => Ai.showOpencodeHistory())
+         },
++        {
++            name: "memory",
++            description: Translation.tr("List the facts every new OpenCode chat starts with"),
++            execute: () => root.opencodeOnly(() => Ai.showOpencodeMemory())
++        },
++        {
++            name: "remember",
++            description: Translation.tr("Keep a fact for new OpenCode chats. Hosted models read it, so no secrets"),
++            execute: args => root.opencodeOnly(() => Ai.rememberOpencodeFact(args.join(" ").trim()))
++        },
++        {
++            name: "forget",
++            description: Translation.tr("Drop a fact from /memory by number"),
++            execute: args => root.opencodeOnly(() => Ai.forgetOpencodeFact(args[0] ?? ""))
++        },
+         {
+             name: "resume",
+             description: Translation.tr("Open a chat from /history by number"),
+diff --git a/services/Ai.qml b/services/Ai.qml
+index 6930d03..2e70d02 100644
+--- a/services/Ai.qml
++++ b/services/Ai.qml
+@@ -779,6 +779,23 @@ Singleton {
+         });
+     }
+ 
++    function showOpencodeMemoryList(facts, title) {
++        const lines = facts.map((fact, i) => `${i + 1}. ${fact}`);
++        root.addMessage(facts.length === 0 ? Translation.tr("Memory is empty. Add a fact with /remember TEXT") : `${title}\n\n${lines.join("\n")}`, root.interfaceRole);
++    }
++
++    function showOpencodeMemory() {
++        runOpencode(["memory"], facts => showOpencodeMemoryList(facts, Translation.tr("New chats start with these facts. Drop one with /forget NUMBER")));
++    }
++
++    function rememberOpencodeFact(fact) {
++        runOpencode(["memory-add", fact], facts => showOpencodeMemoryList(facts, Translation.tr("Saved. New chats start with these facts")));
++    }
++
++    function forgetOpencodeFact(number) {
++        runOpencode(["memory-forget", String(number)], facts => showOpencodeMemoryList(facts, Translation.tr("Forgotten. New chats start with these facts")));
++    }
++
+     function resumeOpencodeChat(number) {
+         const session = root.opencodeHistory[number - 1];
+         if (!session) {

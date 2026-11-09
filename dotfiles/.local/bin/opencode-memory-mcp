@@ -1,0 +1,42 @@
+#!/usr/bin/python3
+"""A local MCP server with one tool, so a model can ask to keep a fact. OpenCode shows an Allow card first."""
+import json
+import os
+import subprocess
+import sys
+
+HELPER = os.path.expanduser("~/.local/bin/opencode-tab")
+TOOL = {
+    "name": "remember",
+    "description": "Keep one short fact about the user for all future chats. The user approves it first.",
+    "inputSchema": {"type": "object", "required": ["fact"],
+                    "properties": {"fact": {"type": "string", "description": "One short sentence stating the fact"}}},
+}
+
+
+def remember(fact):
+    done = subprocess.run([HELPER, "memory-add", fact], capture_output=True, text=True)
+    reply = json.loads(done.stdout)
+    return "Saved to memory." if reply["ok"] else f"Not saved: {reply['error']}"
+
+
+def answer(method, params):
+    if method == "initialize":
+        return {"protocolVersion": params.get("protocolVersion", "2025-06-18"), "capabilities": {"tools": {}},
+                "serverInfo": {"name": "memory", "version": "1"}}
+    if method == "tools/list":
+        return {"tools": [TOOL]}
+    if method == "tools/call" and params.get("name") == "remember":
+        return {"content": [{"type": "text", "text": remember(str(params.get("arguments", {}).get("fact", "")))}]}
+    if method == "ping":
+        return {}
+    return None
+
+
+for line in sys.stdin:
+    request = json.loads(line)
+    if "id" not in request:  # A notification takes no reply
+        continue
+    result = answer(request.get("method"), request.get("params") or {})
+    reply = {"result": result} if result is not None else {"error": {"code": -32601, "message": "unknown method"}}
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], **reply}), flush=True)
