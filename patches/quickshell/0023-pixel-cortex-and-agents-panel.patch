@@ -1,0 +1,1097 @@
+diff --git a/modules/common/widgets/PagePlaceholder.qml b/modules/common/widgets/PagePlaceholder.qml
+index ba5172c..c5c35c8 100644
+--- a/modules/common/widgets/PagePlaceholder.qml
++++ b/modules/common/widgets/PagePlaceholder.qml
+@@ -8,6 +8,7 @@ Item {
+ 
+     property bool shown: true
+     property alias icon: shapeWidget.text
++    property Component iconComponent: null // Replaces the shape and its symbol
+     property alias title: widgetNameText.text
+     property alias description: widgetDescriptionText.text
+     property alias shape: shapeWidget.shape
+@@ -31,11 +32,19 @@ Item {
+ 
+         MaterialShapeWrappedMaterialSymbol {
+             id: shapeWidget
++            visible: !root.iconComponent
+             Layout.alignment: Qt.AlignHCenter
+             padding: 12
+             iconSize: 56
+             rotation: -30 * (1 - root.opacity)
+         }
++        Loader {
++            active: !!root.iconComponent
++            visible: active
++            Layout.alignment: Qt.AlignHCenter
++            Layout.bottomMargin: 8
++            sourceComponent: root.iconComponent
++        }
+         StyledText {
+             id: widgetNameText
+             visible: title !== ""
+diff --git a/modules/common/widgets/PixelCortex.qml b/modules/common/widgets/PixelCortex.qml
+new file mode 100644
+index 0000000..92087d1
+--- /dev/null
++++ b/modules/common/widgets/PixelCortex.qml
+@@ -0,0 +1,80 @@
++import qs.modules.common
++import QtQuick
++
++/**
++ * The Material "neurology" brain, redrawn on an 18 by 18 grid so it matches the symbol it replaces.
++ * While thinking, light runs out from the middle of the brain, with sparks in the accent colour.
++ * With idleAnimation on, a slow pulse passes now and then. It's still otherwise, so long chats stay cheap.
++ */
++Canvas {
++    id: root
++    property color color: Appearance.colors.colOnLayer1
++    property bool thinking: false
++    property bool idleAnimation: false
++    property int pixel: 1
++    property int tick: 0
++
++    readonly property int wavePeriod: thinking ? 10 : 60
++    readonly property color colWave: Appearance.m3colors.m3primary
++    readonly property color colSpark: Appearance.m3colors.m3tertiary
++
++    readonly property var sprite: [
++        ".....###..###.....",
++        "....##########....",
++        "....##..##..##....",
++        "..####..##..####..",
++        ".#####..##..#####.",
++        "###.###.##.###.###",
++        "##......##......##",
++        "##......##......##",
++        "###.....##.....###",
++        "#####...##...#####",
++        "#####...##...#####",
++        "##......##......##",
++        "###..##.##.##..###",
++        ".######.##.######.",
++        "..####..##..####..",
++        "....##..##..##....",
++        "....##########....",
++        ".....###..###....."
++    ]
++
++    implicitWidth: sprite[0].length * pixel
++    implicitHeight: sprite.length * pixel
++    onTickChanged: requestPaint()
++    onThinkingChanged: {
++        tick = 0;
++        requestPaint();
++    }
++    onColorChanged: requestPaint()
++    onColWaveChanged: requestPaint()
++    onColSparkChanged: requestPaint()
++
++    Timer {
++        running: root.visible && (root.thinking || root.idleAnimation)
++        interval: root.thinking ? 90 : 160
++        repeat: true
++        onTriggered: root.tick = (root.tick + 1) % 600 // A multiple of both wave periods
++    }
++
++    onPaint: {
++        const ctx = getContext("2d");
++        ctx.clearRect(0, 0, width, height);
++        const middle = (sprite[0].length - 1) / 2;
++        const animated = thinking || idleAnimation;
++        sprite.forEach((row, y) => {
++            for (let x = 0; x < row.length; x++) {
++                if (row[x] !== "#") continue;
++                let colour = root.color;
++                if (animated) {
++                    const distance = Math.floor(Math.abs(x - middle));
++                    const wave = (distance - tick % wavePeriod + wavePeriod * 2) % wavePeriod;
++                    if (wave <= 1) colour = colWave;
++                    if (thinking && (x * 7 + y * 13 + tick * 5) % 37 === 0) colour = colSpark;
++                }
++                ctx.fillStyle = colour;
++                ctx.fillRect(x * pixel, y * pixel, pixel, pixel);
++            }
++        });
++    }
++}
+diff --git a/modules/common/widgets/ToolbarTabBar.qml b/modules/common/widgets/ToolbarTabBar.qml
+index 708b30b..07657c9 100644
+--- a/modules/common/widgets/ToolbarTabBar.qml
++++ b/modules/common/widgets/ToolbarTabBar.qml
+@@ -31,6 +31,7 @@ Item {
+         current: index == root.currentIndex
+         text: modelData.name
+         materialSymbol: modelData.icon
++        iconComponent: modelData.iconComponent ?? null
+         onClicked: {
+             root.setCurrentIndex(index);
+         }
+@@ -56,18 +57,18 @@ Item {
+         implicitHeight: contentItem.children[root.currentIndex]?.implicitHeight ?? 0
+         radius: height / 2
+         // Animation
+-        property Item targetItem: contentItem.children[root.currentIndex]
++        property Item targetItem: contentItem.children[root.currentIndex] ?? null
+         AnimatedTabIndexPair {
+             id: leftBound
+             idx1Duration: 50
+             idx2Duration: 200
+-            index: activeIndicator.targetItem.x
++            index: activeIndicator.targetItem?.x ?? 0
+         }
+         AnimatedTabIndexPair {
+             id: rightBound
+             idx1Duration: 50
+             idx2Duration: 200
+-            index: activeIndicator.targetItem.x + activeIndicator.targetItem.width
++            index: (activeIndicator.targetItem?.x ?? 0) + (activeIndicator.targetItem?.width ?? 0)
+         }
+         x: Math.min(leftBound.idx1, leftBound.idx2)
+         width: Math.max(rightBound.idx1, rightBound.idx2) - x
+diff --git a/modules/common/widgets/ToolbarTabButton.qml b/modules/common/widgets/ToolbarTabButton.qml
+index e535188..7cf308d 100644
+--- a/modules/common/widgets/ToolbarTabButton.qml
++++ b/modules/common/widgets/ToolbarTabButton.qml
+@@ -10,6 +10,7 @@ RippleButton {
+     id: root
+     required property string materialSymbol
+     required property bool current
++    property Component iconComponent: null // Replaces the symbol
+     horizontalPadding: 10
+ 
+     implicitHeight: 40
+@@ -27,10 +28,17 @@ RippleButton {
+ 
+         MaterialSymbol {
+             id: icon
++            visible: !root.iconComponent
+             anchors.verticalCenter: parent.verticalCenter
+             iconSize: 22
+             text: root.materialSymbol
+         }
++        Loader {
++            active: !!root.iconComponent
++            visible: active
++            anchors.verticalCenter: parent.verticalCenter
++            sourceComponent: root.iconComponent
++        }
+         StyledText {
+             id: label
+             anchors.verticalCenter: parent.verticalCenter
+diff --git a/modules/ii/sidebarLeft/AiChat.qml b/modules/ii/sidebarLeft/AiChat.qml
+index 59245db..8c41589 100644
+--- a/modules/ii/sidebarLeft/AiChat.qml
++++ b/modules/ii/sidebarLeft/AiChat.qml
+@@ -53,6 +53,11 @@ Item {
+             description: Translation.tr("Switch the OpenCode agent: build or plan"),
+             execute: args => root.opencodeOnly(() => Ai.setOpencodeAgent(args[0]))
+         },
++        {
++            name: "agents",
++            description: Translation.tr("Open the agents panel: switch, call, watch and create agents"),
++            execute: () => root.opencodeOnly(() => agentsPanel.shown = true)
++        },
+         {
+             name: "approve",
+             description: Translation.tr("Approve what OpenCode is asking, once"),
+@@ -465,8 +470,13 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+ 
+             PagePlaceholder {
+                 z: 2
+-                shown: Ai.messageIDs.length === 0
++                shown: Ai.messageIDs.length === 0 && !agentsPanel.shown
+                 icon: "neurology"
++                iconComponent: PixelCortex {
++                    pixel: 5
++                    color: Appearance.m3colors.m3outline
++                    idleAnimation: true
++                }
+                 title: Translation.tr("Large language models")
+                 description: Translation.tr("Click the model name below to choose a model\n/history opens past OpenCode chats\nCtrl+O to expand sidebar\nCtrl+P to pin sidebar\nCtrl+D to detach sidebar")
+                 shape: MaterialShape.Shape.PixelCircle
+@@ -476,6 +486,13 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+                 z: 3
+                 target: messageListView
+             }
++
++            AgentsPanel {
++                id: agentsPanel
++                z: 4
++                anchors.fill: parent
++                inputField: root.inputField
++            }
+         }
+ 
+         DescriptionBox {
+@@ -890,8 +907,8 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+                     visible: Ai.opencodeModel
+                     icon: "smart_toy"
+                     text: Ai.opencodeAgent === "plan" ? Translation.tr("Plan") : Translation.tr("Build")
+-                    tooltipText: Translation.tr("OpenCode agent. Click to switch between Build and Plan")
+-                    onClicked: Ai.setOpencodeAgent(Ai.opencodeAgent === "plan" ? "build" : "plan")
++                    tooltipText: Translation.tr("Agents: switch, call, watch and create them")
++                    onClicked: agentsPanel.shown = !agentsPanel.shown
+                 }
+ 
+                 ApiInputBoxIndicator {
+diff --git a/modules/ii/sidebarLeft/SidebarLeftContent.qml b/modules/ii/sidebarLeft/SidebarLeftContent.qml
+index 654b46d..d7bfdef 100644
+--- a/modules/ii/sidebarLeft/SidebarLeftContent.qml
++++ b/modules/ii/sidebarLeft/SidebarLeftContent.qml
+@@ -17,12 +17,20 @@ Item {
+     property bool animeEnabled: Config.options.policies.weeb !== 0
+     property bool animeCloset: Config.options.policies.weeb === 2
+     property var tabButtonList: [
+-        ...(root.aiChatEnabled ? [{"icon": "neurology", "name": Translation.tr("Intelligence")}] : []),
++        ...(root.aiChatEnabled ? [{"icon": "neurology", "iconComponent": cortexIcon, "name": Translation.tr("Intelligence")}] : []),
+         ...(root.translatorEnabled ? [{"icon": "translate", "name": Translation.tr("Translator")}] : []),
+         ...((root.animeEnabled && !root.animeCloset) ? [{"icon": "bookmark_heart", "name": Translation.tr("Anime")}] : [])
+     ]
+     property int tabCount: swipeView.count
+ 
++    Component {
++        id: cortexIcon
++        PixelCortex {
++            thinking: Ai.busy
++            idleAnimation: true
++        }
++    }
++
+     function focusActiveItem() {
+         swipeView.currentItem.forceActiveFocus()
+     }
+diff --git a/modules/ii/sidebarLeft/aiChat/AgentsPanel.qml b/modules/ii/sidebarLeft/aiChat/AgentsPanel.qml
+new file mode 100644
+index 0000000..d2fd814
+--- /dev/null
++++ b/modules/ii/sidebarLeft/aiChat/AgentsPanel.qml
+@@ -0,0 +1,454 @@
++import qs.modules.common
++import qs.modules.common.widgets
++import qs.services
++import QtQuick
++import QtQuick.Layouts
++
++/**
++ * Everything about agents in one place: which one answers, the subagents to call with @,
++ * the ones running in this chat, and a form for a new one. Agent text is plain text,
++ * because it comes from a model or an agent file.
++ */
++Rectangle {
++    id: root
++    property bool shown: false
++    property var inputField
++    property var chatAgents: []
++    property string openAgent: "" // Whose messages are showing
++    property string openText: ""
++    property bool formShown: false
++    property string formError: ""
++    property string panelError: ""
++    property string teamOpen: "" // The role whose model list is showing
++
++    function modelName(id) {
++        return (Ai.opencodeTeam.models ?? []).find(model => model.id === id)?.name ?? id ?? "";
++    }
++
++    readonly property var primaryAgents: Ai.opencodeAgents.filter(agent => agent.mode === "primary")
++    readonly property var subagents: Ai.opencodeAgents.filter(agent => agent.mode !== "primary")
++
++    visible: shown
++    color: Appearance.colors.colLayer1Base // Solid, so the chat behind it never shows through
++    onShownChanged: {
++        if (!shown) return;
++        Ai.refreshOpencodeAgents();
++        refreshChatAgents();
++    }
++
++    function refreshChatAgents() {
++        const list = [];
++        Ai.messageIDs.forEach(id => (Ai.messageByID[id]?.subagents ?? []).forEach(agent => list.push(agent)));
++        root.chatAgents = list.reverse();
++    }
++
++    function showMessages(agent) {
++        if (root.openAgent === agent.id) {
++            root.openAgent = "";
++            return;
++        }
++        root.openAgent = agent.id;
++        root.openText = Translation.tr("Loading…");
++        Ai.runAgentTool(["messages", agent.id], messages => {
++            root.openText = messages.map(item => `${item.role === "user" ? Translation.tr("Task") : Translation.tr("Reply")}:\n${item.text}`)
++                .join("\n\n") || Translation.tr("No messages yet");
++        }, error => root.openText = error);
++    }
++
++    function createAgent() {
++        root.formError = "";
++        Ai.runAgentTool(["agent-new", nameField.text.trim(), descriptionField.text, Ai.models[Ai.currentModelId]?.model ?? "", promptField.text], () => {
++            nameField.text = "";
++            descriptionField.text = "";
++            promptField.text = "";
++            root.formShown = false;
++            Ai.refreshOpencodeAgents();
++            Ai.reloadOpencodeServer();
++        }, error => root.formError = error);
++    }
++
++    Timer { // Keeps the running list live
++        running: root.shown
++        interval: 1000
++        repeat: true
++        onTriggered: root.refreshChatAgents()
++    }
++
++    component SectionTitle: StyledText {
++        Layout.fillWidth: true
++        Layout.topMargin: 10
++        wrapMode: Text.Wrap
++        font.pixelSize: Appearance.font.pixelSize.small
++        color: Appearance.colors.colSubtext
++    }
++
++    component AgentRow: RippleButton {
++        id: agentRow
++        property string name
++        property string description
++        property string kind: "other"
++        property bool selected: false
++        Layout.fillWidth: true
++        implicitHeight: agentRowContent.implicitHeight + 16
++        buttonRadius: Appearance.rounding.small
++        colBackground: selected ? Appearance.colors.colSecondaryContainer : Appearance.colors.colLayer2
++        colBackgroundHover: selected ? Appearance.colors.colSecondaryContainerHover : Appearance.colors.colLayer2Hover
++        colRipple: Appearance.colors.colLayer2Active
++        contentItem: RowLayout {
++            id: agentRowContent
++            anchors {
++                left: parent.left
++                right: parent.right
++                verticalCenter: parent.verticalCenter
++                margins: 10
++            }
++            spacing: 10
++            PixelRobot {
++                kind: agentRow.kind
++                state: "done"
++                pixel: 2
++            }
++            ColumnLayout {
++                Layout.fillWidth: true
++                spacing: 0
++                StyledText {
++                    Layout.fillWidth: true
++                    textFormat: Text.PlainText
++                    elide: Text.ElideRight
++                    color: Appearance.colors.colOnLayer1
++                    text: agentRow.name
++                }
++                StyledText {
++                    Layout.fillWidth: true
++                    textFormat: Text.PlainText
++                    wrapMode: Text.Wrap
++                    font.pixelSize: Appearance.font.pixelSize.smaller
++                    color: Appearance.colors.colOnSurfaceVariant
++                    text: agentRow.description
++                }
++            }
++        }
++    }
++
++    component TeamRow: Rectangle {
++        id: teamRow
++        property string role
++        property string label
++        property string hint
++        property string modelId
++        property bool canPick: true
++        property bool canSwitch: false
++        readonly property bool open: root.teamOpen === role
++        Layout.fillWidth: true
++        implicitHeight: teamRowColumn.implicitHeight + 16
++        radius: Appearance.rounding.small
++        color: Appearance.colors.colLayer2
++
++        ColumnLayout {
++            id: teamRowColumn
++            anchors {
++                left: parent.left
++                right: parent.right
++                top: parent.top
++                margins: 8
++            }
++            spacing: 6
++            RowLayout {
++                Layout.fillWidth: true
++                spacing: 8
++                ColumnLayout {
++                    Layout.fillWidth: true
++                    spacing: 0
++                    StyledText {
++                        Layout.fillWidth: true
++                        color: Appearance.colors.colOnLayer1
++                        text: teamRow.label
++                    }
++                    StyledText {
++                        Layout.fillWidth: true
++                        wrapMode: Text.Wrap
++                        font.pixelSize: Appearance.font.pixelSize.smaller
++                        color: Appearance.colors.colOnSurfaceVariant
++                        text: teamRow.hint
++                    }
++                }
++                StyledSwitch {
++                    visible: teamRow.canSwitch
++                    checked: Ai.opencodeTeam.advising ?? false
++                    onClicked: Ai.setOpencodeTeam("advising", checked ? "on" : "off", error => root.panelError = error)
++                }
++                PanelButton {
++                    label: root.modelName(teamRow.modelId)
++                    onClicked: {
++                        if (teamRow.canPick) root.teamOpen = teamRow.open ? "" : teamRow.role;
++                        else {
++                            root.inputField.text = "/model ";
++                            root.inputField.cursorPosition = root.inputField.text.length;
++                            root.inputField.forceActiveFocus();
++                            root.shown = false;
++                        }
++                    }
++                }
++            }
++            Flow {
++                visible: teamRow.open
++                Layout.fillWidth: true
++                spacing: 6
++                Repeater {
++                    model: Ai.opencodeTeam.models ?? []
++                    delegate: PanelButton {
++                        required property var modelData
++                        label: modelData.name
++                        onClicked: {
++                            Ai.setOpencodeTeam(teamRow.role, modelData.id, error => root.panelError = error);
++                            root.teamOpen = "";
++                        }
++                    }
++                }
++            }
++        }
++    }
++
++    component PanelButton: RippleButton {
++        id: panelButton
++        property string label
++        implicitHeight: 32
++        implicitWidth: panelButtonText.implicitWidth + 24
++        buttonRadius: height / 2
++        colBackground: Appearance.colors.colLayer3
++        colBackgroundHover: Appearance.colors.colLayer3Hover
++        colRipple: Appearance.colors.colLayer3Active
++        contentItem: StyledText {
++            id: panelButtonText
++            horizontalAlignment: Text.AlignHCenter
++            verticalAlignment: Text.AlignVCenter
++            font.pixelSize: Appearance.font.pixelSize.small
++            color: Appearance.colors.colOnLayer2
++            text: panelButton.label
++        }
++    }
++
++    StyledFlickable {
++        anchors.fill: parent
++        anchors.margins: 12
++        clip: true
++        contentHeight: panelColumn.implicitHeight
++
++        ColumnLayout {
++            id: panelColumn
++            width: parent.width
++            spacing: 6
++
++            RowLayout {
++                Layout.fillWidth: true
++                StyledText {
++                    Layout.fillWidth: true
++                    font.pixelSize: Appearance.font.pixelSize.larger
++                    color: Appearance.colors.colOnLayer1
++                    text: Translation.tr("Agents")
++                }
++                PanelButton {
++                    label: Translation.tr("Close")
++                    onClicked: root.shown = false
++                }
++            }
++
++            SectionTitle {
++                text: Translation.tr("Team: a model for each role")
++            }
++            TeamRow {
++                role: "main"
++                label: Translation.tr("Main agent")
++                hint: Translation.tr("Talks to you and does the work")
++                modelId: Ai.models[Ai.currentModelId]?.model ?? ""
++                canPick: false
++            }
++            TeamRow {
++                role: "advisor"
++                label: Translation.tr("Advisor")
++                hint: Translation.tr("The main agent asks it before big or risky steps")
++                modelId: Ai.opencodeTeam.advisor ?? ""
++                canSwitch: true
++            }
++            TeamRow {
++                role: "subagents"
++                label: Translation.tr("Subagents")
++                hint: Translation.tr("Smaller jobs, usually a faster model")
++                modelId: Ai.opencodeTeam.subagents ?? ""
++            }
++
++            SectionTitle {
++                text: Translation.tr("Who answers")
++            }
++            Repeater {
++                model: root.primaryAgents
++                delegate: AgentRow {
++                    required property var modelData
++                    name: modelData.name === "plan" ? Translation.tr("Plan") : Translation.tr("Build")
++                    description: modelData.description
++                    selected: Ai.opencodeAgent === modelData.name
++                    onClicked: Ai.setOpencodeAgent(modelData.name)
++                }
++            }
++
++            SectionTitle {
++                text: Translation.tr("Subagents: click one to call it in your message")
++            }
++            Repeater {
++                model: root.subagents
++                delegate: AgentRow {
++                    required property var modelData
++                    name: `@${modelData.name}`
++                    description: modelData.description
++                    kind: modelData.name
++                    onClicked: {
++                        const field = root.inputField;
++                        field.text = `@${modelData.name} ${field.text}`;
++                        field.cursorPosition = field.text.length;
++                        field.forceActiveFocus();
++                        root.shown = false;
++                    }
++                }
++            }
++
++            SectionTitle {
++                visible: root.chatAgents.length > 0
++                text: Translation.tr("In this chat")
++            }
++            Repeater {
++                model: root.chatAgents
++                delegate: Rectangle {
++                    id: chatAgent
++                    required property var modelData
++                    readonly property bool working: modelData.state === "running" || modelData.state === "waiting"
++                    readonly property bool messagesOpen: root.openAgent === modelData.id
++                    Layout.fillWidth: true
++                    implicitHeight: chatAgentColumn.implicitHeight + 16
++                    radius: Appearance.rounding.small
++                    color: Appearance.colors.colLayer2
++
++                    ColumnLayout {
++                        id: chatAgentColumn
++                        anchors {
++                            left: parent.left
++                            right: parent.right
++                            top: parent.top
++                            margins: 8
++                        }
++                        spacing: 6
++                        RowLayout {
++                            Layout.fillWidth: true
++                            spacing: 10
++                            PixelRobot {
++                                kind: chatAgent.modelData.name ?? "other"
++                                state: chatAgent.modelData.state ?? "running"
++                                pixel: 2
++                            }
++                            ColumnLayout {
++                                Layout.fillWidth: true
++                                spacing: 0
++                                StyledText {
++                                    Layout.fillWidth: true
++                                    textFormat: Text.PlainText
++                                    elide: Text.ElideRight
++                                    color: Appearance.colors.colOnLayer1
++                                    text: `@${chatAgent.modelData.name ?? ""}`
++                                }
++                                StyledText {
++                                    Layout.fillWidth: true
++                                    textFormat: Text.PlainText
++                                    elide: Text.ElideRight
++                                    font.pixelSize: Appearance.font.pixelSize.smaller
++                                    color: Appearance.colors.colOnSurfaceVariant
++                                    text: chatAgent.modelData.activity || chatAgent.modelData.task || ""
++                                }
++                            }
++                            PanelButton {
++                                visible: chatAgent.working
++                                label: Translation.tr("Stop")
++                                onClicked: Ai.runAgentTool(["stop", chatAgent.modelData.id], () => {}, error => root.panelError = error)
++                            }
++                            PanelButton {
++                                label: chatAgent.messagesOpen ? Translation.tr("Hide") : Translation.tr("Messages")
++                                onClicked: root.showMessages(chatAgent.modelData)
++                            }
++                        }
++                        StyledText {
++                            visible: chatAgent.messagesOpen
++                            Layout.fillWidth: true
++                            textFormat: Text.PlainText
++                            wrapMode: Text.Wrap
++                            font.pixelSize: Appearance.font.pixelSize.small
++                            color: Appearance.colors.colOnLayer1
++                            text: root.openText
++                        }
++                    }
++                }
++            }
++            StyledText {
++                visible: root.panelError.length > 0
++                Layout.fillWidth: true
++                textFormat: Text.PlainText
++                wrapMode: Text.Wrap
++                font.pixelSize: Appearance.font.pixelSize.small
++                color: Appearance.colors.colError
++                text: root.panelError
++            }
++
++            PanelButton {
++                visible: !root.formShown
++                Layout.topMargin: 10
++                label: Translation.tr("New subagent")
++                onClicked: root.formShown = true
++            }
++            ColumnLayout {
++                visible: root.formShown
++                Layout.fillWidth: true
++                Layout.topMargin: 10
++                spacing: 8
++                SectionTitle {
++                    text: Translation.tr("New subagent on %1. It asks before acting, like every agent").arg(Ai.models[Ai.currentModelId]?.name ?? "")
++                }
++                MaterialTextField {
++                    id: nameField
++                    Layout.fillWidth: true
++                    placeholderText: Translation.tr("Name, like translator")
++                }
++                MaterialTextField {
++                    id: descriptionField
++                    Layout.fillWidth: true
++                    placeholderText: Translation.tr("What it's for, in one line")
++                }
++                MaterialTextArea {
++                    id: promptField
++                    Layout.fillWidth: true
++                    Layout.preferredHeight: 120
++                    placeholderText: Translation.tr("Its instructions")
++                }
++                StyledText {
++                    visible: root.formError.length > 0
++                    Layout.fillWidth: true
++                    textFormat: Text.PlainText
++                    wrapMode: Text.Wrap
++                    font.pixelSize: Appearance.font.pixelSize.small
++                    color: Appearance.colors.colError
++                    text: root.formError
++                }
++                RowLayout {
++                    Layout.fillWidth: true
++                    Item {
++                        Layout.fillWidth: true
++                    }
++                    PanelButton {
++                        label: Translation.tr("Cancel")
++                        onClicked: root.formShown = false
++                    }
++                    PanelButton {
++                        label: Translation.tr("Create")
++                        onClicked: root.createAgent()
++                    }
++                }
++            }
++        }
++    }
++}
+diff --git a/modules/ii/sidebarLeft/aiChat/AiMessage.qml b/modules/ii/sidebarLeft/aiChat/AiMessage.qml
+index 1d03d0a..048b322 100644
+--- a/modules/ii/sidebarLeft/aiChat/AiMessage.qml
++++ b/modules/ii/sidebarLeft/aiChat/AiMessage.qml
+@@ -38,6 +38,18 @@ Rectangle {
+ 
+     color: "transparent"
+ 
++    // Images named in a finished reply, from this computer's home folder only
++    readonly property var imagePaths: {
++        if (messageData?.role !== "assistant" || !(messageData?.done ?? false)) return [];
++        const home = Directories.home.replace("file://", "");
++        const folder = Ai.opencodeFolder.length > 0 ? Ai.opencodeFolder : `${home}/.agents`;
++        const found = (messageData.content.match(/[\w~.\/-]+\.(?:png|jpe?g|webp)\b/gi) ?? []).map(path => {
++            if (path.startsWith("~/")) return `${home}${path.slice(1)}`;
++            return path.startsWith("/") ? path : `${folder}/${path}`;
++        }).filter(path => path.startsWith(`${home}/`) && !path.includes(".."));
++        return [...new Set(found)].slice(0, 4);
++    }
++
+     TextMetrics {
+         id: bubbleTextMetrics
+         font.family: Appearance.font.family.reading
+@@ -148,8 +160,19 @@ Rectangle {
+                     id: loadingIndicatorLoader
+                     anchors.centerIn: parent
+                     shown: (root.messageBlocks.length < 1) && (!root.messageData.done)
+-                    sourceComponent: MaterialLoadingIndicator {
+-                        loading: true
++                    sourceComponent: Row {
++                        spacing: 10
++                        PixelCortex {
++                            anchors.verticalCenter: parent.verticalCenter
++                            pixel: 2
++                            color: Appearance.colors.colSubtext
++                            thinking: true
++                        }
++                        StyledText {
++                            anchors.verticalCenter: parent.verticalCenter
++                            color: Appearance.colors.colSubtext
++                            text: Translation.tr("Thinking")
++                        }
+                     }
+                 }
+             }
+@@ -212,6 +235,29 @@ Rectangle {
+             }
+         }
+ 
++        Repeater { // Images it made. One that doesn't exist takes no space
++            model: root.imagePaths
++            delegate: Image {
++                required property string modelData
++                Layout.fillWidth: true
++                Layout.topMargin: 6
++                Layout.preferredHeight: status === Image.Ready ? Math.min(320, width * implicitHeight / Math.max(1, implicitWidth)) : 0
++                visible: status === Image.Ready
++                source: `file://${modelData}`
++                asynchronous: true
++                cache: false
++                fillMode: Image.PreserveAspectFit
++                horizontalAlignment: Image.AlignLeft
++                sourceSize.width: 1024
++
++                MouseArea {
++                    anchors.fill: parent
++                    cursorShape: Qt.PointingHandCursor
++                    onClicked: Qt.openUrlExternally(parent.source)
++                }
++            }
++        }
++
+         StyledText { // What OpenCode is doing right now
+             visible: (root.messageData?.systemFence?.length ?? 0) > 0 && !(root.messageData?.done ?? true)
+                 && root.messageBlocks.length > 0 && (root.messageData?.permissionFence?.length ?? 0) === 0
+@@ -298,31 +344,25 @@ Rectangle {
+                         Item {
+                             Layout.alignment: Qt.AlignVCenter
+                             Layout.fillHeight: true
+-                            implicitWidth: messageData?.role == 'assistant' ? modelIcon.width : roleIcon.implicitWidth
+-                            implicitHeight: messageData?.role == 'assistant' ? modelIcon.height : roleIcon.implicitHeight
++                            implicitWidth: messageData?.role == 'assistant' ? cortexIcon.implicitWidth : roleIcon.implicitWidth
++                            implicitHeight: messageData?.role == 'assistant' ? cortexIcon.implicitHeight : roleIcon.implicitHeight
+ 
+-                            CustomIcon {
+-                                id: modelIcon
++                            PixelCortex {
++                                id: cortexIcon
+                                 anchors.centerIn: parent
+-                                visible: messageData?.role == 'assistant' && Ai.models[messageData?.model].icon
+-                                width: Appearance.font.pixelSize.large
+-                                height: Appearance.font.pixelSize.large
+-                                source: messageData?.role == 'assistant' ? Ai.models[messageData?.model].icon :
+-                                    messageData?.role == 'user' ? 'linux-symbolic' : 'desktop-symbolic'
+-
+-                                colorize: true
++                                visible: messageData?.role == 'assistant'
+                                 color: Appearance.colors.colSubtext
++                                thinking: !(messageData?.done ?? true)
+                             }
+ 
+                             MaterialSymbol {
+                                 id: roleIcon
+                                 anchors.centerIn: parent
+-                                visible: !modelIcon.visible
++                                visible: !cortexIcon.visible
+                                 iconSize: Appearance.font.pixelSize.larger
+                                 color: Appearance.colors.colSubtext
+                                 text: messageData?.role == 'user' ? 'person' : 
+                                     messageData?.role == 'interface' ? 'settings' : 
+-                                    messageData?.role == 'assistant' ? 'neurology' : 
+                                     'computer'
+                             }
+                         }
+diff --git a/modules/ii/sidebarLeft/aiChat/MessagePermissionBlock.qml b/modules/ii/sidebarLeft/aiChat/MessagePermissionBlock.qml
+index 9934498..2f586a1 100644
+--- a/modules/ii/sidebarLeft/aiChat/MessagePermissionBlock.qml
++++ b/modules/ii/sidebarLeft/aiChat/MessagePermissionBlock.qml
+@@ -157,5 +157,16 @@ Rectangle {
+                 onClicked: Ai.approveCommand(root.messageData)
+             }
+         }
++
++        AnswerButton { // Only lookups. What they send still leaves this computer
++            visible: root.live && (root.block.chatTool ?? "").length > 0
++            Layout.fillWidth: true
++            label: Translation.tr("Allow in this chat")
++            colLabel: Appearance.colors.colOnLayer2
++            colBackground: Appearance.colors.colLayer3
++            colBackgroundHover: Appearance.colors.colLayer3Hover
++            colRipple: Appearance.colors.colLayer3Active
++            onClicked: Ai.allowInChat(root.messageData, root.block.chatTool)
++        }
+     }
+ }
+diff --git a/modules/ii/sidebarLeft/aiChat/MessageSubagentRow.qml b/modules/ii/sidebarLeft/aiChat/MessageSubagentRow.qml
+index b19c1d1..a88a902 100644
+--- a/modules/ii/sidebarLeft/aiChat/MessageSubagentRow.qml
++++ b/modules/ii/sidebarLeft/aiChat/MessageSubagentRow.qml
+@@ -49,7 +49,7 @@ Rectangle {
+         PixelRobot {
+             id: robot
+             Layout.alignment: Qt.AlignVCenter
+-            kind: root.name === "general" || root.name === "explore" ? root.name : "other"
++            kind: root.name
+             state: root.agent.state ?? "running"
+         }
+ 
+diff --git a/modules/ii/sidebarLeft/aiChat/PixelRobot.qml b/modules/ii/sidebarLeft/aiChat/PixelRobot.qml
+index 2b8eba9..8bc975c 100644
+--- a/modules/ii/sidebarLeft/aiChat/PixelRobot.qml
++++ b/modules/ii/sidebarLeft/aiChat/PixelRobot.qml
+@@ -4,7 +4,7 @@ import QtQuick
+ /**
+  * A small pixel art robot, one kind per subagent type, drawn from the sprites below in theme colours.
+  * A 14 by 14 grid plus one row above for the question mark. It only animates while it has something to show.
+- * O outline, B body, H highlight, D shade, F face, A antenna.
++ * O outline, B body, H highlight, D shade, F face, A antenna or hat, P paint.
+  */
+ Canvas {
+     id: root
+@@ -17,9 +17,18 @@ Canvas {
+     readonly property bool active: state === "running" || state === "waiting"
+     readonly property bool off: state === "failed" || state === "stopped"
+     readonly property color colBody: off ? Appearance.colors.colOutline
+-        : (kind === "general" ? Appearance.m3colors.m3primary : (kind === "explore" ? Appearance.m3colors.m3tertiary : Appearance.m3colors.m3secondary))
++        : (kinds[kind] ?? Appearance.m3colors.m3secondary)
+     readonly property color colEye: off ? Appearance.colors.colError : Appearance.colors.colOnLayer1
+ 
++    readonly property color colPrimary: Appearance.m3colors.m3primary
++    // Image and voice get their own hue, as strong and as bright as the theme's primary
++    readonly property var kinds: ({
++        "general": colPrimary,
++        "explore": Appearance.m3colors.m3tertiary,
++        "image": Qt.hsla(0.11, colPrimary.hslSaturation, colPrimary.hslLightness, 1),
++        "voice": Qt.hsla(0.36, colPrimary.hslSaturation, colPrimary.hslLightness, 1),
++    })
++
+     readonly property var sprites: ({
+         "general": {
+             "eyes": [[4, 6], [8, 6]],
+@@ -89,6 +98,74 @@ Canvas {
+                 "......OO......",
+                 ".....OOOO....."]]
+         },
++        "image": {
++            "eyes": [[4, 6], [8, 6]],
++            "eyeSize": 2,
++            "frames": [[
++                "...AAAAAAA....",
++                "..AAAAAAAAA...",
++                "..OOOOOOOOOO..",
++                ".OBHHHHHHHHBO.",
++                ".OBBBBBBBBBBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBBBBBBBBBBO.",
++                "..OOOOOOOOOO..",
++                "...OBDDDDBO..P",
++                "...OBBBBBBOOO.",
++                "...OO....OO..."],
++                [
++                "...AAAAAAA....",
++                "..AAAAAAAAA...",
++                "..OOOOOOOOOO..",
++                ".OBHHHHHHHHBO.",
++                ".OBBBBBBBBBBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBO.",
++                ".OBFFFFFFFFBOP",
++                ".OBBBBBBBBBBO.",
++                "..OOOOOOOOOOO.",
++                "...OBDDDDBOO..",
++                "...OBBBBBBO...",
++                "...OO....OO..."]]
++        },
++        "voice": {
++            "eyes": [[4, 5], [8, 5]],
++            "eyeSize": 2,
++            "frames": [[
++                "....OOOOOO....",
++                "...O......O...",
++                "..OOOOOOOOOO..",
++                "OOBHHHHHHHHBOO",
++                "OBBFFFFFFFFBBO",
++                "OBBFFFFFFFFBBO",
++                "OOBFFFFFFFFBOO",
++                "..OFFFFFFFFO..",
++                "..OFFFDDFFFO..",
++                "..OFFFFFFFFO..",
++                "..OOOOOOOOOO..",
++                "....OBBBBO....",
++                "...OBDDDDBO...",
++                "...OO....OO..."],
++                [
++                ".A..OOOOOO..A.",
++                "A..O......O..A",
++                "..OOOOOOOOOO..",
++                "OOBHHHHHHHHBOO",
++                "OBBFFFFFFFFBBO",
++                "OBBFFFFFFFFBBO",
++                "OOBFFFFFFFFBOO",
++                "..OFFFDDFFFO..",
++                "..OFFDFFDFFO..",
++                "..OFFFDDFFFO..",
++                "..OOOOOOOOOO..",
++                "....OBBBBO....",
++                "...OBDDDDBO...",
++                "...OO....OO..."]]
++        },
+         "other": {
+             "eyes": [[4, 6], [8, 6]],
+             "eyeSize": 2,
+@@ -154,6 +231,7 @@ Canvas {
+             "D": Qt.darker(colBody, 1.4),
+             "F": Appearance.colors.colLayer0,
+             "A": state === "waiting" ? Appearance.colors.colError : Qt.lighter(colBody, 1.4),
++            "P": Appearance.m3colors.m3tertiary,
+         };
+         const rows = sprite.frames[state === "running" ? frame : 0];
+         rows.forEach((row, y) => {
+diff --git a/services/Ai.qml b/services/Ai.qml
+index 7ef1774..6930d03 100644
+--- a/services/Ai.qml
++++ b/services/Ai.qml
+@@ -34,6 +34,8 @@ Singleton {
+     readonly property string opencodeHelper: `${Quickshell.env("HOME")}/.local/bin/opencode-tab`
+     property bool opencodeServerWanted: false
+     property string opencodeAgent: "build"
++    property var opencodeAgents: []
++    property var opencodeTeam: ({}) // advising, advisor, subagents and the models to pick from
+     property string opencodeFolder: "" // This chat's project. Never remembered: empty means ~/.agents
+     property var opencodeFolders: []
+     readonly property bool opencodeModel: models[currentModelId]?.api_format === "opencode"
+@@ -627,10 +629,68 @@ Singleton {
+         interval: 15 * 60 * 1000
+         onTriggered: {
+             if (root.busy) restart();
++            else opencodeBusyCheck.running = true;
++        }
++    }
++
++    Process { // A turn sent from the command line doesn't pass through this file
++        id: opencodeBusyCheck
++        command: [root.opencodeHelper, "busy"]
++        onExited: (exitCode, exitStatus) => {
++            if (exitCode === 0) opencodeIdleTimer.restart();
+             else root.opencodeServerWanted = false;
+         }
+     }
+ 
++    // The agents panel. Separate from opencodeCommand, since it has to work during a turn
++    Process {
++        id: opencodeAgentTool
++        property var onResult: null
++        property var onFailed: null
++        stdout: StdioCollector {
++            onStreamFinished: {
++                try {
++                    const reply = JSON.parse(text);
++                    if (reply.ok) opencodeAgentTool.onResult(reply.result);
++                    else opencodeAgentTool.onFailed(reply.error);
++                } catch (e) {
++                    opencodeAgentTool.onFailed(Translation.tr("OpenCode did not answer"));
++                }
++            }
++        }
++    }
++
++    function runAgentTool(args, onResult, onFailed) {
++        if (opencodeAgentTool.running) {
++            onFailed(Translation.tr("Busy. Try again in a moment"));
++            return;
++        }
++        opencodeIdleTimer.restart();
++        opencodeAgentTool.onResult = onResult;
++        opencodeAgentTool.onFailed = onFailed;
++        opencodeAgentTool.command = [root.opencodeHelper, ...args];
++        opencodeAgentTool.running = true;
++    }
++
++    function refreshOpencodeAgents() {
++        root.runAgentTool(["agents"], agents => {
++            root.opencodeAgents = agents;
++            root.runAgentTool(["team"], team => root.opencodeTeam = team, () => {});
++        }, () => {});
++    }
++
++    function setOpencodeTeam(role, value, onFailed) {
++        root.runAgentTool(["team-set", role, value], team => {
++            root.opencodeTeam = team;
++            if (role !== "advising") root.reloadOpencodeServer();
++        }, onFailed);
++    }
++
++    // The server reads agent files when it starts. It comes back with the next message
++    function reloadOpencodeServer() {
++        if (!root.busy) root.opencodeServerWanted = false;
++    }
++
+     // /history, /resume, /diff and /undo. The helper prints {ok, result} or {ok, error}.
+     Process {
+         id: opencodeCommand
+@@ -1016,6 +1076,14 @@ Singleton {
+         opencodeReply.running = true;
+     }
+ 
++    // Only for tools the helper accepts. It answers this card too
++    function allowInChat(message: AiMessageData, tool) {
++        const strategy = root.apiStrategies.opencode;
++        message.permissionFence = "";
++        opencodeReply.command = [root.opencodeHelper, "allow", strategy.sessionId, strategy.activeSession, strategy.activeRequest, tool];
++        opencodeReply.running = true;
++    }
++
+     Process {
+         id: opencodeReply
+         onExited: (exitCode, exitStatus) => {
+diff --git a/services/ai/OpenCodeApiStrategy.qml b/services/ai/OpenCodeApiStrategy.qml
+index 59d54e6..0e8da80 100644
+--- a/services/ai/OpenCodeApiStrategy.qml
++++ b/services/ai/OpenCodeApiStrategy.qml
+@@ -164,6 +164,7 @@ ApiStrategy {
+             "effect": effectOf(request.action),
+             "lang": request.patch?.length > 0 ? "diff" : (request.action === "shell" ? "bash" : (request.detail?.length > 0 ? "json" : "txt")),
+             "detail": body,
++            "chatTool": request.chatTool ?? "",
+             "state": "pending",
+             "outcome": "",
+         };

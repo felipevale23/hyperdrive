@@ -1,0 +1,97 @@
+#!/usr/bin/python3
+"""Creates an image from a text prompt.
+
+  gen-image "PROMPT" OUTPUT.png
+
+Tries FLUX.2 klein, then FLUX 3 klein, both on NVIDIA, then Gemini. Keys come from the shell's keyring and never reach the
+command line or the output. The file extension follows what the service really returned,
+so OUTPUT.png may become OUTPUT.jpg. Prints the final path. An existing file is never
+replaced.
+"""
+import base64
+import functools
+import json
+import pathlib
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+FLUX = "https://ai.api.nvidia.com/v1/genai/black-forest-labs/"
+STATUS = "https://api.nvcf.nvidia.com/v2/nvcf/pexec/status/"
+GEMINI = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent"
+WAIT = 180  # seconds for a job NVIDIA has queued
+TYPES = {b"\x89PNG": ".png", b"\xff\xd8\xff": ".jpg", b"RIFF": ".webp"}
+
+
+def keys():
+    raw = subprocess.run(["secret-tool", "lookup", "application", "illogical-impulse"],
+                         capture_output=True, text=True).stdout
+    return json.loads(raw or "{}").get("apiKeys", {})
+
+
+def call(url, headers, body=None):
+    """Returns (status, response headers, parsed body)."""
+    data = None if body is None else json.dumps(body).encode()
+    request = urllib.request.Request(url, data, {"Content-Type": "application/json", **headers})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        text = response.read()
+        return response.status, response.headers, json.loads(text) if text else {}
+
+
+def flux(model, key, prompt):
+    auth = {"Authorization": f"Bearer {key}", "Accept": "application/json"}
+    status, headers, data = call(FLUX + model, {**auth, "NVCF-POLL-SECONDS": "30"},
+                                 {"prompt": prompt, "width": 1024, "height": 1024, "steps": 4, "seed": 0})
+    deadline = time.monotonic() + WAIT
+    while status == 202:  # Queued: NVIDIA answers with a job to ask about
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"still queued after {WAIT}s")
+        status, headers, data = call(STATUS + headers["NVCF-REQID"], {**auth, "NVCF-POLL-SECONDS": "30"})
+    return base64.b64decode(data["artifacts"][0]["base64"])
+
+
+def gemini(key, prompt):
+    _, _, data = call(GEMINI, {"x-goog-api-key": key}, {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"responseModalities": ["IMAGE"]},
+    })
+    parts = data["candidates"][0]["content"]["parts"]
+    return base64.b64decode(next(part["inlineData"]["data"] for part in parts if "inlineData" in part))
+
+
+def main():
+    if len(sys.argv) != 3 or not sys.argv[1].strip():
+        sys.exit(__doc__.strip())
+    prompt, output = sys.argv[1], pathlib.Path(sys.argv[2])
+    found, failures = keys(), []
+    for name, key, make in (("FLUX.2 klein", "nvidia", functools.partial(flux, "flux.2-klein-4b")),
+                            ("FLUX 3 klein", "nvidia", functools.partial(flux, "flux-3-image-klein")),
+                            ("Gemini", "gemini", gemini)):
+        if not found.get(key):
+            failures.append(f"{name}: no key")
+            continue
+        try:
+            image = make(found[key], prompt)
+        except urllib.error.HTTPError as error:
+            failures.append(f"{name}: HTTP {error.code}")
+            continue
+        except (OSError, KeyError, IndexError, StopIteration, ValueError) as error:
+            failures.append(f"{name}: {type(error).__name__} {error}")
+            continue
+        suffix = next((end for start, end in TYPES.items() if image.startswith(start)), output.suffix)
+        final = output.with_suffix(suffix)
+        final.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with open(final, "xb") as file:
+                file.write(image)
+        except FileExistsError:
+            sys.exit(f"gen-image: {final} already exists")
+        print(final)
+        return
+    sys.exit("gen-image: no image. " + "; ".join(failures))
+
+
+if __name__ == "__main__":
+    main()
