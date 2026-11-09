@@ -1,0 +1,76 @@
+diff --git a/modules/ii/bar/ActiveWindow.qml b/modules/ii/bar/ActiveWindow.qml
+index 741ec50..89fb62a 100644
+--- a/modules/ii/bar/ActiveWindow.qml
++++ b/modules/ii/bar/ActiveWindow.qml
+@@ -14,7 +14,10 @@ Item {
+ 
+     property string activeWindowAddress: `0x${activeWindow?.HyprlandToplevel?.address}`
+     property bool focusingThisMonitor: HyprlandData.activeWorkspace?.monitor == monitor?.name
+-    property var biggestWindow: HyprlandData.biggestWindowForWorkspace(root.monitor?.activeWorkspace?.id)
++    // The shown scratchpad (minimized windows) covers the normal workspace, so use it first
++    readonly property int specialWorkspaceId: HyprlandData.specialWorkspaceIdForMonitor(root.monitor?.name)
++    property var biggestWindow: HyprlandData.biggestWindowForWorkspace(
++        root.specialWorkspaceId !== 0 ? root.specialWorkspaceId : root.monitor?.activeWorkspace?.id)
+ 
+     implicitWidth: colLayout.implicitWidth
+ 
+diff --git a/modules/ii/bar/WindowControls.qml b/modules/ii/bar/WindowControls.qml
+index 95f792d..ba27879 100644
+--- a/modules/ii/bar/WindowControls.qml
++++ b/modules/ii/bar/WindowControls.qml
+@@ -15,7 +15,9 @@ Item {
+     readonly property HyprlandMonitor monitor: Hyprland.monitorFor(root.QsWindow.window?.screen)
+     readonly property var client: HyprlandData.windowByAddress[`0x${Hyprland.activeToplevel?.address}`]
+     readonly property bool active: client !== undefined
+-        && client?.workspace?.id === root.monitor?.activeWorkspace?.id
++        && (client?.workspace?.id === root.monitor?.activeWorkspace?.id
++            || (client?.workspace?.id < 0
++                && client?.workspace?.id === HyprlandData.specialWorkspaceIdForMonitor(root.monitor?.name)))
+     readonly property bool maximized: client?.fullscreen === 1
+ 
+     implicitWidth: row.implicitWidth
+diff --git a/modules/ii/dock/DockAppButton.qml b/modules/ii/dock/DockAppButton.qml
+index b791a29..39a1727 100644
+--- a/modules/ii/dock/DockAppButton.qml
++++ b/modules/ii/dock/DockAppButton.qml
+@@ -118,7 +118,21 @@ DockButton {
+             return;
+         }
+         lastFocused = (lastFocused + 1) % appToplevel.toplevels.length
+-        appToplevel.toplevels[lastFocused].activate()
++        const toplevel = appToplevel.toplevels[lastFocused];
++        const client = HyprlandData.clientForToplevel(toplevel);
++        // Minimized = moved to special:special. Restore it to the current workspace
++        // instead of opening the scratchpad, whose bigger gaps shrink the window.
++        if (client && client.workspace?.id < 0 && HyprlandData.activeWorkspace?.id > 0) {
++            const ws = HyprlandData.activeWorkspace.id;
++            const restore = `hl.dsp.window.move({ workspace = "${ws}", follow = true, window = "address:${client.address}" })`;
++            const special = HyprlandData.specialWorkspaceIdForMonitor(HyprlandData.activeWorkspace.monitor);
++            // Hide the scratchpad if it is open, so the restored window isn't covered
++            const hide = special === client.workspace.id
++                ? `; hyprctl dispatch 'hl.dsp.workspace.toggle_special("${client.workspace.name.replace("special:", "")}")'` : "";
++            Quickshell.execDetached(["sh", "-c", `hyprctl dispatch '${restore}'${hide}; hyprctl dispatch 'hl.dsp.focus({ window = "address:${client.address}" })'`]);
++            return;
++        }
++        toplevel.activate()
+     }
+ 
+     middleClickAction: () => {
+diff --git a/services/HyprlandData.qml b/services/HyprlandData.qml
+index 5dfedab..6399570 100644
+--- a/services/HyprlandData.qml
++++ b/services/HyprlandData.qml
+@@ -32,6 +32,13 @@ Singleton {
+         })
+     }
+ 
++    // Id of the special workspace (scratchpad) shown on a monitor, 0 when none.
++    // Minimized windows live in special:special, shown over the normal workspace.
++    function specialWorkspaceIdForMonitor(monitorName) {
++        const mon = root.monitors.find(m => m.name === monitorName);
++        return mon?.specialWorkspace?.id ?? 0;
++    }
++
+     function hyprlandClientsForWorkspace(workspace) {
+         return root.windowList.filter(win => win.workspace.id === workspace);
+     }
