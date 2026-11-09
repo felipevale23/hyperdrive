@@ -42,3 +42,10 @@ hl.define_submap("alttab", function()
     hl.bind("Return",   altTabEnd)
     hl.bind("catchall", altTabEnd)
 end)
+
+-- ── Restore minimized windows ─────────────────────────────────────────────
+-- Minimize parks windows in special:special. end-4's SUPER+S only shows that
+-- scratchpad over the workspace (smaller, dimmed); this moves the windows back.
+hl.unbind("SUPER + S")
+hl.bind("SUPER + S", hl.dsp.exec_cmd("$HOME/.config/hypr/custom/scripts/restore-minimized.sh"),
+    { description = "Window: Restore minimized windows" })
