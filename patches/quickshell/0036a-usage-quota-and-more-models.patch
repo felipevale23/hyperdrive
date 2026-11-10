@@ -1,0 +1,86 @@
+--- a/services/Ai.qml
++++ b/services/Ai.qml
+@@ -349,6 +349,19 @@
+             ["mistral-large-4", "Mistral Large 4", "9router/nvidia/mistralai/mistral-large-4-1t-a52b", "mistral-symbolic", "Good all-round, but NVIDIA's free queue can stall it for 30s or more. Free (NVIDIA)"],
+             ["nemotron-3-ultra", "Nemotron 3 Ultra", "9router/nvidia/nvidia/nemotron-3-ultra-550b-a55b", "spark-symbolic", "Big reasoning model; can stall on NVIDIA's free queue. Free (NVIDIA)"],
+             ["minimax-m3.1-flash", "MiniMax M3.1 Flash", "9router/nvidia/minimaxai/minimax-m3.1-flash", "spark-symbolic", "Quick questions; can stall on NVIDIA's free queue. Free (NVIDIA)"],
++            ["nvidia-glm-5.2", "GLM 5.2 (NVIDIA)", "9router/nvidia/z-ai/glm-5.2", "spark-symbolic", "Coding and tool use. Can stall on NVIDIA's free queue. Free (NVIDIA)"],
++            ["nvidia-deepseek-v4-pro", "DeepSeek V4 Pro (NVIDIA)", "9router/nvidia/deepseek-ai/deepseek-v4-pro", "spark-symbolic", "Step-by-step reasoning and hard coding. Can stall on NVIDIA's free queue. Free (NVIDIA)"],
++            ["nvidia-deepseek-v4-flash", "DeepSeek V4 Flash (NVIDIA)", "9router/nvidia/deepseek-ai/deepseek-v4-flash", "spark-symbolic", "Quicker DeepSeek for everyday work. Free (NVIDIA)"],
++            ["nvidia-kimi-k2.6", "Kimi K2.6 (NVIDIA)", "9router/nvidia/moonshotai/kimi-k2.6", "spark-symbolic", "Long context and agent-style tasks. Free (NVIDIA)"],
++            ["nvidia-minimax-m3", "MiniMax M3 (NVIDIA)", "9router/nvidia/minimaxai/minimax-m3", "spark-symbolic", "General tasks and tool use. Free (NVIDIA)"],
++            ["nvidia-minimax-m2.7", "MiniMax M2.7 (NVIDIA)", "9router/nvidia/minimaxai/minimax-m2.7", "spark-symbolic", "Lighter MiniMax for quick work. Free (NVIDIA)"],
++            ["ag-gemini-4-argon", "Gemini 4 Argon High (Antigravity)", "9router/ag/gemini-4-argon-high", "google-gemini-symbolic", "Newest Gemini with high thinking. Uses the Antigravity account: use sparingly"],
++            ["ag-gemini-3.8-flash", "Gemini 3.8 Flash (Antigravity)", "9router/ag/gemini-3.8-flash", "google-gemini-symbolic", "Fast everyday chat that does not use Gemini's free daily quota. Antigravity account: use sparingly"],
++            ["ag-gemini-3.1-pro", "Gemini 3.1 Pro (Antigravity)", "9router/ag/gemini-pro-agent", "google-gemini-symbolic", "Hard coding and long tasks. Antigravity account: use sparingly"],
++            ["ag-claude-sonnet-5.5", "Claude Sonnet 5.5 (Antigravity)", "9router/ag/claude-sonnet-5-5", "spark-symbolic", "Hardest coding, with thinking. Antigravity account: use sparingly"],
++            ["ag-claude-opus-5.5", "Claude Opus 5.5 (Antigravity)", "9router/ag/claude-opus-5-5", "spark-symbolic", "The strongest model here, with thinking. Antigravity account: use sparingly"],
++            ["ag-claude-sonnet-4.6", "Claude Sonnet 4.6 (Antigravity)", "9router/ag/claude-sonnet-4-6", "spark-symbolic", "Strong coding, with thinking. Antigravity account: use sparingly"],
++            ["ag-gpt-oss-120b", "GPT-OSS 120B (Antigravity)", "9router/ag/gpt-oss-120b-medium", "spark-symbolic", "Open-weight reasoning model. Antigravity account: use sparingly"],
+             ["mistral-large-4-direct", "Mistral Large 4 (direct)", "nvidia/mistralai/mistral-large-4-1t-a52b", "mistral-symbolic", "Skips 9router: use it while 9router is stopped. Free (NVIDIA)"],
+         ].forEach(([id, name, model, icon, hint]) => {
+             root.addModel(`opencode-${id}`, {
+@@ -673,9 +686,56 @@
+         return root.apiStrategies.opencode.shortTokens(Math.round(count));
+     }
+ 
+-    // /usage: this chat's tokens by agent and model, context fill, the budget, and 9router today
++    // The 9router quota tracker: each account's limits and when they reset, from 9router-ctl quota
++    function showQuotaTracker() {
++        if (!quotaProc.running) quotaProc.running = true;
++    }
++    Process {
++        id: quotaProc
++        command: [`${Quickshell.env("HOME")}/.local/bin/9router-ctl`, "quota"]
++        stdout: StdioCollector {
++            id: quotaOut
++            onStreamFinished: {
++                let reply = null;
++                try { reply = JSON.parse(quotaOut.text); } catch (e) {}
++                if (!reply || reply.error) {
++                    root.addMessage(Translation.tr("Quota tracker: %1").arg(reply?.error ?? Translation.tr("9router gave no answer")), root.interfaceRole);
++                    return;
++                }
++                root.addMessage(root.quotaTable(reply.connections ?? []), root.interfaceRole);
++            }
++        }
++    }
++    function quotaReset(iso) {
++        if (!iso) return "–";
++        const minutes = Math.round((new Date(iso).getTime() - Date.now()) / 60000);
++        if (isNaN(minutes)) return "–";
++        if (minutes <= 0) return Translation.tr("now");
++        if (minutes < 120) return Translation.tr("in %1 min").arg(minutes);
++        if (minutes < 48 * 60) return Translation.tr("in %1 h").arg(Math.round(minutes / 60));
++        return Translation.tr("in %1 days").arg(Math.round(minutes / 1440));
++    }
++    function quotaTable(connections) {
++        const number = value => Number.isInteger(value) ? `${value}` : `${Math.round(value * 100) / 100}`;
++        const rows = [];
++        for (const conn of connections) {
++            const account = `${conn.provider} · ${conn.name}`;
++            if (conn.quotas.length === 0) {
++                rows.push(`| ${account} | ${conn.error ?? conn.message ?? "–"} | | | |`);
++                continue;
++            }
++            for (const quota of conn.quotas) {
++                const left = quota.remaining ?? (quota.total > 0 ? 100 * (1 - quota.used / quota.total) : null);
++                rows.push(`| ${account} | ${quota.name} | ${quota.total > 0 ? `${number(quota.used ?? 0)} / ${number(quota.total)}` : "–"} | ${left === null ? "–" : `${Math.round(left)}%`} | ${root.quotaReset(quota.resetAt)} |`);
++            }
++        }
++        return `${Translation.tr("Quota tracker (9router)")}\n\n| ${Translation.tr("Account")} | ${Translation.tr("Limit")} | ${Translation.tr("Used")} | ${Translation.tr("Left")} | ${Translation.tr("Resets")} |\n|---|---|---|---|---|\n${rows.join("\n")}`;
++    }
++
++    // /usage: the quota tracker, then this chat's tokens by agent and model, context fill, the budget, and 9router today
+     function showOpencodeUsage() {
+-        const session = opencodeSessionOrAdvice();
++        root.showQuotaTracker();
++        const session = root.apiStrategies.opencode.sessionId; // No chat yet is fine here: the quota stands alone
+         if (session.length === 0) return;
+         root.refreshRouterUsage();
+         runOpencode(["usage", session], usage => {
+@@ -1438,3 +1498,4 @@
+         }
+     }
+ }
++
