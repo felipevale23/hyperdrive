@@ -779,3 +779,14 @@ index ee00ffd..6002fc1 100644
          AnswerButton { // Only lookups. What they send still leaves this computer
              visible: root.live && (root.block.chatTool ?? "").length > 0
              Layout.fillWidth: true
+--- a/modules/ii/sidebarLeft/aiChat/MessagePermissionBlock.qml
++++ b/modules/ii/sidebarLeft/aiChat/MessagePermissionBlock.qml
+@@ -180,7 +180,7 @@
+             colBackground: Appearance.colors.colLayer3
+             colBackgroundHover: Appearance.colors.colLayer3Hover
+             colRipple: Appearance.colors.colLayer3Active
+-            onClicked: Ai.runAgentTool(["read-grant-add", root.block.grantPath], () => Ai.approveCommand(root.messageData),
++            onClicked: Ai.runAgentTool(["access-add", root.block.grantPath, "read"], () => Ai.approveCommand(root.messageData),
+                 error => Ai.addMessage(error, Ai.interfaceRole))
+         }
+ 

@@ -771,35 +771,50 @@ def safe_read(request):
     return request.get("action") == "read" and bool(request.get("resources")) and all(map(safe_path, request["resources"]))
 
 
-READ_ACCESS = os.path.expanduser("~/.agents/read-access.json")  # Files and folders the user always lets models read
+ACCESS_FILE = os.path.expanduser("~/.agents/allowed-paths.json")  # Files and folders the user always lets models read, or read and change
+OLD_ACCESS_FILE = os.path.expanduser("~/.agents/read-access.json")  # The first version: a plain list of paths, read only
+ACCESS_LEVELS = ("read", "write")
 READ_TOOLS = ("read", "grep", "glob", "list")
+WRITE_TOOLS = ("edit", "write")
+AGENTS_HOME = os.path.realpath(os.path.expanduser("~/.agents"))
 
 
-def read_grants():
-    try:
-        with open(READ_ACCESS, encoding="utf-8") as file:
-            found = json.load(file)
-        return [entry for entry in found if isinstance(entry, str)] if isinstance(found, list) else []
-    except (OSError, ValueError):
-        return []
+def access_entries():
+    """[{"path", "access"}], oldest first. A list from the first version counts as read-only."""
+    for path in (ACCESS_FILE, OLD_ACCESS_FILE):
+        try:
+            with open(path, encoding="utf-8") as file:
+                found = json.load(file)
+        except (OSError, ValueError):
+            continue
+        entries = []
+        for entry in found if isinstance(found, list) else []:
+            if isinstance(entry, str):
+                entry = {"path": entry, "access": "read"}
+            if isinstance(entry, dict) and isinstance(entry.get("path"), str) and entry.get("access") in ACCESS_LEVELS:
+                entries.append({"path": entry["path"], "access": entry["access"]})
+        return entries
+    return []
 
 
-def save_read_grants(grants):
-    os.makedirs(os.path.dirname(READ_ACCESS), exist_ok=True)
-    temporary = f"{READ_ACCESS}.{os.getpid()}"
+def save_access(entries):
+    os.makedirs(os.path.dirname(ACCESS_FILE), exist_ok=True)
+    temporary = f"{ACCESS_FILE}.{os.getpid()}"
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(descriptor, "w", encoding="utf-8") as file:
-        json.dump(grants, file, indent=2)
+        json.dump(entries, file, indent=2)
         file.write("\n")
-    os.replace(temporary, READ_ACCESS)
+    os.replace(temporary, ACCESS_FILE)
 
 
-def read_grant_list():
-    return [{"path": path, "exists": os.path.exists(path)} for path in read_grants()]
+def access_list():
+    return [dict(entry, exists=os.path.exists(entry["path"])) for entry in access_entries()]
 
 
-def read_grant_add(path):
-    """Always lets models read this file or folder, and everything inside a folder except private files."""
+def access_add(path, access):
+    """Always lets models read (or read and change) this file or folder. Setting it again changes the level."""
+    if access not in ACCESS_LEVELS:
+        raise RuntimeError("the level is read or write")
     written = os.path.expanduser(path.strip())
     if not os.path.isabs(written):
         raise RuntimeError(f"use a full path, not {path}")
@@ -812,40 +827,52 @@ def read_grant_add(path):
     inside = os.path.relpath(real, home)
     if private_path(inside) or inside.split(os.sep)[0] in HOME_PRIVATE:
         raise RuntimeError(f"{path} holds private files, so models can't be given it")
-    grants = read_grants()
-    if real not in grants:
-        save_read_grants(grants + [real])
-    return read_grant_list()
+    if access == "write" and (real == AGENTS_HOME or AGENTS_HOME.startswith(real + os.sep)):
+        raise RuntimeError("models can't change ~/.agents: it holds this list, your memory and your skills")
+    entries = [entry for entry in access_entries() if entry["path"] != real]
+    save_access(entries + [{"path": real, "access": access}])
+    return access_list()
 
 
-def read_grant_remove(path):
-    grants = read_grants()
-    if path not in grants:
+def access_remove(which):
+    """WHICH is a path, or its number in the list."""
+    entries = access_entries()
+    if which.isdigit() and 1 <= int(which) <= len(entries):
+        which = entries[int(which) - 1]["path"]
+    if which not in [entry["path"] for entry in entries]:
         raise RuntimeError("that path is not in the list")
-    save_read_grants([entry for entry in grants if entry != path])
-    return read_grant_list()
+    save_access([entry for entry in entries if entry["path"] != which])
+    return access_list()
 
 
-def read_covered(path):
-    """True when a granted file or folder holds this path, and it is not a private file inside it."""
+def access_covers(path, levels):
+    """True when a granted file or folder at one of these levels holds the path, and it is not a private file inside it."""
     real = os.path.realpath(os.path.join(FOLDER, os.path.expanduser(path)))
-    for grant in read_grants():
-        granted = os.path.realpath(grant)
-        if real == granted or real.startswith(granted + os.sep):
+    for entry in access_entries():
+        granted = os.path.realpath(entry["path"])
+        if entry["access"] in levels and (real == granted or real.startswith(granted + os.sep)):
+            if entry["access"] == "write" and (real == AGENTS_HOME or real.startswith(AGENTS_HOME + os.sep)) and os.path.dirname(real) == AGENTS_HOME:
+                continue  # Never the files that hold the rules themselves
             return not private_path(os.path.relpath(real, granted))
     return False
 
 
-def read_granted(request, tool_name, tool_input):
-    """A read the user already allowed for good: skip the question."""
-    if not read_grants():
+def access_granted(request, tool_name, tool_input):
+    """A read or edit the user already allowed for good: skip the question."""
+    if not access_entries():
         return False
-    if request.get("action") == "read":
-        resources = request.get("resources") or []
-        return bool(resources) and all(map(read_covered, resources))
-    if request.get("action") == "external_directory" and tool_name in READ_TOOLS and isinstance(tool_input, dict):
-        path = tool_input.get("path") or tool_input.get("filePath")
-        return isinstance(path, str) and bool(path) and read_covered(path)
+    action = request.get("action")
+    resources = request.get("resources") or []
+    path = tool_input.get("path") or tool_input.get("filePath") if isinstance(tool_input, dict) else None
+    if action == "read":
+        return bool(resources) and all(access_covers(resource, ACCESS_LEVELS) for resource in resources)
+    if action in WRITE_TOOLS:
+        return bool(resources) and all(access_covers(resource, ("write",)) for resource in resources)
+    if action == "external_directory" and isinstance(path, str) and path:
+        if tool_name in READ_TOOLS:
+            return access_covers(path, ACCESS_LEVELS)
+        if tool_name in WRITE_TOOLS:
+            return access_covers(path, ("write",))
     return False
 
 
@@ -1026,7 +1053,10 @@ def run_turn(model, session, mode, agent, folder, text, regen=0, plain_ok=True):
             elif kind == "permission.asked":
                 owner = data.get("sessionID")
                 asking = tools.get((data.get("source") or {}).get("id"), {})
-                if safe_read(data) or chat_key(data) in chat_allowed(sid) or read_granted(data, asking.get("name", ""), asking.get("input")):
+                if access_granted(data, asking.get("name", ""), asking.get("input")) and data.get("action") != "read":
+                    # Kept for /undo: only the permission request holds the patch
+                    asked_files[(data.get("source") or {}).get("id")] = (data.get("metadata") or {}).get("files") or []
+                if safe_read(data) or chat_key(data) in chat_allowed(sid) or access_granted(data, asking.get("name", ""), asking.get("input")):
                     status, _ = api.call("POST", f"/api/session/{owner}/permission/{data['id']}/reply", {"decision": "once"})
                     if status == 204:
                         continue
@@ -1042,7 +1072,7 @@ def run_turn(model, session, mode, agent, folder, text, regen=0, plain_ok=True):
                       "resources": data.get("resources", []), "subagent": owner != sid,
                       "chatTool": chat_key(data) if CHAT_TOOLS.fullmatch(chat_key(data)) else "",
                       "tool": tools.get(source, {}).get("name", ""), "target": target_of(tool_input),  # What the tool itself asked for
-                      "readPath": str(tool_input.get("path") or "") if isinstance(tool_input, dict) and tools.get(source, {}).get("name") in READ_TOOLS else "",
+                      "readPath": str(tool_input.get("path") or tool_input.get("filePath") or "") if isinstance(tool_input, dict) and tools.get(source, {}).get("name") in READ_TOOLS + WRITE_TOOLS else "",
                       "detail": json.dumps(tool_input, indent=2) if data.get("action") in ("subagent", "memory_remember") else "",
                       "patch": "\n".join(entry.get("patch", "") for entry in files)})
             elif kind == "permission.replied":
@@ -1274,6 +1304,11 @@ def undo(session):
     tools = finished_tools(items[last:])
     journal = journal_read(session)
     entries = patches_of(tools, journal)
+    root = os.path.realpath(FOLDER)
+    outside = sorted({entry["file"] for entry in entries
+                      if not os.path.realpath(os.path.join(FOLDER, entry["file"])).startswith(root + os.sep)})
+    if outside:  # The patches are relative to the project: outside it they would damage the file
+        raise RuntimeError(f"can't undo edits outside the project, change these by hand: {', '.join(outside)}")
     backups = {}
     for entry in entries:
         path = os.path.join(FOLDER, entry["file"])
@@ -1329,10 +1364,12 @@ def main():
         return report({"project-info": project_info, "project-new": project_new}[args[0]], args[1])
     if len(args) == 3 and args[0] == "project-save":
         return report(project_save, *args[1:])
-    if args == ["read-grants"]:
-        return report(read_grant_list)
-    if len(args) == 2 and args[0] in ("read-grant-add", "read-grant-remove"):
-        return report({"read-grant-add": read_grant_add, "read-grant-remove": read_grant_remove}[args[0]], args[1])
+    if args == ["access-list"]:
+        return report(access_list)
+    if len(args) == 3 and args[0] == "access-add":
+        return report(access_add, *args[1:])
+    if len(args) == 2 and args[0] == "access-remove":
+        return report(access_remove, args[1])
     if len(args) == 4 and args[0] == "reply":
         return reply(*args[1:])
     if args == ["sessions"]:
