@@ -98,7 +98,7 @@
 +        const target = request.target ?? "";
 +        const outside = request.action === "external_directory" && tool.length > 0 && target.length > 0;
 +        const what = outside ? qsTr("%1, outside the project").arg(describe(tool, target))
-+            : describe(request.action, named ? resources[0] : (["read", "grep", "glob"].includes(request.action) ? target : ""));
++            : describe(request.action, target.length > 0 && ["edit", "write", "read", "grep", "glob"].includes(request.action) ? target : (named ? resources[0] : ""));
          return {
              "kind": "card",
 -            "title": qsTr("%1 wants to %2").arg(request.subagent ? qsTr("A subagent") : "OpenCode").arg(describe(request.action, named ? resources[0] : "")),
