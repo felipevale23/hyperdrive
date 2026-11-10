@@ -1,0 +1,403 @@
+diff --git a/modules/common/functions/StringUtils.qml b/modules/common/functions/StringUtils.qml
+index e90c0d6..8fb9e85 100644
+--- a/modules/common/functions/StringUtils.qml
++++ b/modules/common/functions/StringUtils.qml
+@@ -196,6 +196,34 @@ Singleton {
+         return result;
+     }
+ 
++    /**
++     * Drops the "Index:" and "=====" lines some tools put above a unified diff. Display only:
++     * /undo needs the recorded patch whole, so never store the result.
++     * @param { string } patch
++     * @returns { string }
++     */
++    function cleanDiff(patch) {
++        return (patch ?? "").split("\n").filter(line => !/^Index: /.test(line) && !/^={3,}\s*$/.test(line)).join("\n");
++    }
++
++    /**
++     * The file a unified diff changes and its added and removed line counts.
++     * @param { string } patch
++     * @returns {{file: string, added: number, removed: number}}
++     */
++    function diffSummary(patch) {
++        let file = "", added = 0, removed = 0;
++        for (const line of (patch ?? "").split("\n")) {
++            if (line.startsWith("+++ ") || line.startsWith("--- ")) {
++                // "+++ b/path\ttimestamp"; a deleted file's "+++" is /dev/null, so keep the "---" name then
++                const name = line.slice(4).split("\t")[0].trim().replace(/^[ab]\//, "");
++                if (name !== "/dev/null" && (file === "" || line.startsWith("+++ "))) file = name;
++            } else if (line.startsWith("+")) added++;
++            else if (line.startsWith("-")) removed++;
++        }
++        return { "file": file, "added": added, "removed": removed };
++    }
++
+     /**
+      * Returns the original string with backslashes escaped
+      * @param { string } str
+diff --git a/modules/ii/sidebarLeft/AiChat.qml b/modules/ii/sidebarLeft/AiChat.qml
+index 8c41589..adc8d98 100644
+--- a/modules/ii/sidebarLeft/AiChat.qml
++++ b/modules/ii/sidebarLeft/AiChat.qml
+@@ -109,11 +109,10 @@ Item {
+         },
+         {
+             name: "tool",
+-            description: Translation.tr("Set the tool to use for the model."),
++            description: Translation.tr("Show or set the tool the model can use. Now: %1").arg(Ai.currentTool),
+             execute: args => {
+-                // console.log(args)
+                 if (args.length == 0 || args[0] == "get") {
+-                    Ai.addMessage(Translation.tr("Usage: %1tool TOOL_NAME").arg(root.commandPrefix), Ai.interfaceRole);
++                    Ai.addMessage(Translation.tr("Current tool: %1. Set another with %2tool TOOL_NAME").arg(Ai.currentTool).arg(root.commandPrefix), Ai.interfaceRole);
+                 } else {
+                     const tool = args[0];
+                     const switched = Ai.setTool(tool);
+@@ -309,6 +308,8 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+         }
+     }
+ 
++    readonly property real statusHeight: statusBg.implicitHeight + statusBg.anchors.topMargin * 2 // The pill and its margins
++
+     component StatusItem: MouseArea {
+         id: statusItem
+         property string icon
+@@ -324,12 +325,12 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+             MaterialSymbol {
+                 text: statusItem.icon
+                 iconSize: Appearance.font.pixelSize.huge
+-                color: Appearance.colors.colSubtext
++                color: Appearance.colors.colOnSurfaceVariant
+             }
+             StyledText {
+                 font.pixelSize: Appearance.font.pixelSize.small
+                 text: statusItem.statusText
+-                color: Appearance.colors.colSubtext
++                color: Appearance.colors.colOnSurfaceVariant
+                 animateChange: true
+             }
+         }
+@@ -389,7 +390,7 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+                 implicitWidth: statusRowLayout.implicitWidth + 10 * 2
+                 implicitHeight: Math.max(statusRowLayout.implicitHeight, 38)
+                 radius: Appearance.rounding.normal - root.padding
+-                color: messageListView.atYBeginning ? Appearance.colors.colLayer2 : Appearance.colors.colLayer2Base
++                color: messageListView.atYBeginning || Ai.opencodeModel ? Appearance.colors.colLayer2 : Appearance.colors.colLayer2Base
+                 Behavior on color {
+                     animation: Appearance.animation.elementMoveFast.colorAnimation.createObject(this)
+                 }
+@@ -431,9 +432,12 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+                 id: messageListView
+                 z: 0
+                 anchors.fill: parent
++                // On OpenCode models the status pill gets its own row, so it can't cover messages on scroll.
++                // Other models keep it floating over the list.
++                anchors.topMargin: Ai.opencodeModel ? root.statusHeight : 0
+                 spacing: 4
+                 popin: false
+-                topMargin: statusBg.implicitHeight + statusBg.anchors.topMargin * 2
++                topMargin: Ai.opencodeModel ? 0 : root.statusHeight
+ 
+                 touchpadScrollFactor: Config.options.interactions.scrolling.touchpadScrollFactor * 1.4
+                 mouseScrollFactor: Config.options.interactions.scrolling.mouseScrollFactor * 1.4
+@@ -925,12 +929,7 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+                     }
+                 }
+ 
+-                ApiInputBoxIndicator {
+-                    // Tool indicator
+-                    icon: "service_toolbox"
+-                    text: Ai.currentTool.charAt(0).toUpperCase() + Ai.currentTool.slice(1)
+-                    tooltipText: Translation.tr("Current tool: %1\nSet it with %2tool TOOL").arg(Ai.currentTool).arg(root.commandPrefix)
+-                }
++                // The tool rarely changes, so it lives in the / menu: /tool shows and sets it
+ 
+                 Item {
+                     Layout.fillWidth: true
+diff --git a/modules/ii/sidebarLeft/ScrollToBottomButton.qml b/modules/ii/sidebarLeft/ScrollToBottomButton.qml
+index 59ed599..77b36ac 100644
+--- a/modules/ii/sidebarLeft/ScrollToBottomButton.qml
++++ b/modules/ii/sidebarLeft/ScrollToBottomButton.qml
+@@ -8,10 +8,12 @@ RippleButton {
+     id: root
+     required property ListView target
+ 
++    // Icon only, in the corner and in a quiet colour, so it doesn't cover the line being read
+     anchors {
+         bottom: parent.bottom
+-        horizontalCenter: parent.horizontalCenter
++        right: parent.right
+         bottomMargin: 10
++        rightMargin: 10
+     }
+ 
+     opacity: !target.atYEnd ? 1 : 0
+@@ -24,34 +26,29 @@ RippleButton {
+         animation: Appearance.animation.elementResize.numberAnimation.createObject(this)
+     }
+ 
+-    implicitWidth: contentItem.implicitWidth + 8 * 2
+-    implicitHeight: contentItem.implicitHeight + 4 * 2
++    implicitWidth: 36
++    implicitHeight: 36
+ 
+-    colBackground: Appearance.colors.colSecondary
+-    colBackgroundHover: Appearance.colors.colSecondaryHover
+-    colRipple: Appearance.colors.colSecondaryActive
+-    buttonRadius: Appearance.rounding.verysmall
++    colBackground: Appearance.colors.colSecondaryContainer
++    colBackgroundHover: Appearance.colors.colSecondaryContainerHover
++    colRipple: Appearance.colors.colSecondaryContainerActive
++    buttonRadius: Appearance.rounding.full
++
++    Accessible.name: Translation.tr("Scroll to bottom")
+ 
+     downAction: () => {
+         target.positionViewAtEnd()
+     }
+ 
+-    contentItem: Row {
+-        id: contentItem
+-        spacing: 4
+-        MaterialSymbol {
+-            anchors.verticalCenter: parent.verticalCenter
+-            text: "arrow_downward"
+-            font.pixelSize: Appearance.font.pixelSize.larger
+-            color: Appearance.colors.colOnSecondary
+-            verticalAlignment: Text.AlignVCenter
+-        }
+-        StyledText {
+-            anchors.verticalCenter: parent.verticalCenter
+-            text: Translation.tr("Scroll to Bottom")
+-            font.pixelSize: Appearance.font.pixelSize.smallie
+-            color: Appearance.colors.colOnSecondary
+-            verticalAlignment: Text.AlignVCenter
+-        }
++    contentItem: MaterialSymbol {
++        horizontalAlignment: Text.AlignHCenter
++        verticalAlignment: Text.AlignVCenter
++        text: "arrow_downward"
++        iconSize: Appearance.font.pixelSize.larger
++        color: Appearance.colors.colOnSecondaryContainer
++    }
++
++    StyledToolTip {
++        text: Translation.tr("Scroll to bottom")
+     }
+ }
+diff --git a/modules/ii/sidebarLeft/aiChat/AgentsPanel.qml b/modules/ii/sidebarLeft/aiChat/AgentsPanel.qml
+index d2fd814..769f50e 100644
+--- a/modules/ii/sidebarLeft/aiChat/AgentsPanel.qml
++++ b/modules/ii/sidebarLeft/aiChat/AgentsPanel.qml
+@@ -79,7 +79,7 @@ Rectangle {
+         Layout.topMargin: 10
+         wrapMode: Text.Wrap
+         font.pixelSize: Appearance.font.pixelSize.small
+-        color: Appearance.colors.colSubtext
++        color: Appearance.colors.colOnSurfaceVariant
+     }
+ 
+     component AgentRow: RippleButton {
+diff --git a/modules/ii/sidebarLeft/aiChat/AiMessage.qml b/modules/ii/sidebarLeft/aiChat/AiMessage.qml
+index 048b322..6245e7a 100644
+--- a/modules/ii/sidebarLeft/aiChat/AiMessage.qml
++++ b/modules/ii/sidebarLeft/aiChat/AiMessage.qml
+@@ -165,12 +165,12 @@ Rectangle {
+                         PixelCortex {
+                             anchors.verticalCenter: parent.verticalCenter
+                             pixel: 2
+-                            color: Appearance.colors.colSubtext
++                            color: Appearance.colors.colOnSurfaceVariant
+                             thinking: true
+                         }
+                         StyledText {
+                             anchors.verticalCenter: parent.verticalCenter
+-                            color: Appearance.colors.colSubtext
++                            color: Appearance.colors.colOnSurfaceVariant
+                             text: Translation.tr("Thinking")
+                         }
+                     }
+@@ -351,7 +351,7 @@ Rectangle {
+                                 id: cortexIcon
+                                 anchors.centerIn: parent
+                                 visible: messageData?.role == 'assistant'
+-                                color: Appearance.colors.colSubtext
++                                color: Appearance.colors.colOnSurfaceVariant
+                                 thinking: !(messageData?.done ?? true)
+                             }
+ 
+@@ -360,7 +360,7 @@ Rectangle {
+                                 anchors.centerIn: parent
+                                 visible: !cortexIcon.visible
+                                 iconSize: Appearance.font.pixelSize.larger
+-                                color: Appearance.colors.colSubtext
++                                color: Appearance.colors.colOnSurfaceVariant
+                                 text: messageData?.role == 'user' ? 'person' : 
+                                     messageData?.role == 'interface' ? 'settings' : 
+                                     'computer'
+@@ -373,7 +373,7 @@ Rectangle {
+                             Layout.fillWidth: true
+                             elide: Text.ElideRight
+                             font.pixelSize: Appearance.font.pixelSize.smaller
+-                            color: Appearance.colors.colSubtext
++                            color: Appearance.colors.colOnSurfaceVariant
+                             text: messageData?.role == 'assistant' ? Ai.models[messageData?.model].name :
+                                 (messageData?.role == 'user' && SystemInfo.username) ? SystemInfo.username :
+                                 Translation.tr("Interface")
+@@ -394,7 +394,7 @@ Rectangle {
+                         id: notVisibleToModelText
+                         anchors.centerIn: parent
+                         iconSize: Appearance.font.pixelSize.small
+-                        color: Appearance.colors.colSubtext
++                        color: Appearance.colors.colOnSurfaceVariant
+                         text: "visibility_off"
+                     }
+                     StyledToolTip {
+diff --git a/modules/ii/sidebarLeft/aiChat/MessageCodeBlock.qml b/modules/ii/sidebarLeft/aiChat/MessageCodeBlock.qml
+index 60028f6..f304058 100644
+--- a/modules/ii/sidebarLeft/aiChat/MessageCodeBlock.qml
++++ b/modules/ii/sidebarLeft/aiChat/MessageCodeBlock.qml
+@@ -28,6 +28,10 @@ ColumnLayout {
+     readonly property string languageLabel: definition.name === "None" ? Translation.tr("Text") : definition.name
+     readonly property bool isDiff: definition.name === "Diff"
+     readonly property int lineCount: codeTextArea.text.split("\n").length
++    // A diff's header names the file and what changed. The +/- also start each row, so changes
++    // don't rely on the row colours alone
++    readonly property var diffSummary: isDiff ? StringUtils.diffSummary(segmentContent) : null
++    readonly property string diffCounts: diffSummary ? `+${diffSummary.added} \u2212${diffSummary.removed}` : ""
+ 
+     // Measured from the real layout, so diff rows and numbers stay right on wrapped lines
+     property var lineRows: []
+@@ -86,7 +90,14 @@ ColumnLayout {
+                 font.pixelSize: Appearance.font.pixelSize.small
+                 font.weight: Font.DemiBold
+                 color: Appearance.colors.colOnLayer2
+-                text: `${root.languageLabel}  ·  ${root.lineCount === 1 ? Translation.tr("1 line") : Translation.tr("%1 lines").arg(root.lineCount)}`
++                Layout.maximumWidth: codeBlockTitleBarRowLayout.width - 120 // Leaves room for the buttons
++                elide: Text.ElideMiddle // Keeps both ends of a long path
++                textFormat: Text.PlainText // The file name comes from the model's tools
++                text: root.diffSummary?.file
++                    ? `${root.diffSummary.file}  ·  ${root.diffCounts}`
++                    : root.isDiff
++                    ? `${root.languageLabel}  ·  ${root.diffCounts}`
++                    : `${root.languageLabel}  ·  ${root.lineCount === 1 ? Translation.tr("1 line") : Translation.tr("%1 lines").arg(root.lineCount)}`
+             }
+ 
+             Item { Layout.fillWidth: true }
+@@ -181,7 +192,7 @@ ColumnLayout {
+                         Layout.alignment: Qt.AlignRight
+                         font.family: Appearance.font.family.monospace
+                         font.pixelSize: Appearance.font.pixelSize.small
+-                        color: Appearance.colors.colSubtext
++                        color: Appearance.colors.colOnSurfaceVariant
+                         horizontalAlignment: Text.AlignRight
+                         verticalAlignment: Text.AlignTop
+                         opacity: 0.65
+@@ -270,7 +281,7 @@ ColumnLayout {
+                                 }
+                             }
+                         }
+-                        color: messageData.thinking ? Appearance.colors.colSubtext : Appearance.colors.colOnLayer1
++                        color: messageData.thinking ? Appearance.colors.colOnSurfaceVariant : Appearance.colors.colOnLayer1
+ 
+                         text: segmentContent
+                         onTextChanged: {
+diff --git a/modules/ii/sidebarLeft/aiChat/MessagePermissionBlock.qml b/modules/ii/sidebarLeft/aiChat/MessagePermissionBlock.qml
+index 2f586a1..483be16 100644
+--- a/modules/ii/sidebarLeft/aiChat/MessagePermissionBlock.qml
++++ b/modules/ii/sidebarLeft/aiChat/MessagePermissionBlock.qml
+@@ -3,6 +3,7 @@ pragma ComponentBehavior: Bound
+ import qs.services
+ import qs.modules.common
+ import qs.modules.common.widgets
++import qs.modules.common.functions
+ import QtQuick
+ import QtQuick.Layouts
+ 
+@@ -85,6 +86,16 @@ Rectangle {
+                     color: Appearance.colors.colOnLayer2
+                     text: root.block.title ?? ""
+                 }
++                StyledText { // How much an edit changes, as in the diff's header
++                    readonly property var summary: root.block.lang === "diff" ? StringUtils.diffSummary(root.block.detail) : null
++                    visible: summary !== null
++                    Layout.fillWidth: true
++                    textFormat: Text.PlainText
++                    font.pixelSize: Appearance.font.pixelSize.smaller
++                    font.family: Appearance.font.family.monospace
++                    color: Appearance.colors.colOnSurfaceVariant
++                    text: summary ? Translation.tr("%1 added, %2 removed").arg(`+${summary.added}`).arg(`\u2212${summary.removed}`) : ""
++                }
+                 StyledText { // Why it asks, or how it ended
+                     visible: text.length > 0
+                     Layout.fillWidth: true
+@@ -104,7 +115,10 @@ Rectangle {
+                 colBackgroundHover: Appearance.colors.colLayer2Hover
+                 colRipple: Appearance.colors.colLayer2Active
+                 onClicked: root.detailShown = !root.detailShown
+-                Accessible.name: Translation.tr("Show details")
++                Accessible.name: root.detailShown ? Translation.tr("Hide details") : Translation.tr("Show details")
++                StyledToolTip {
++                    text: root.detailShown ? Translation.tr("Hide details") : Translation.tr("Show details")
++                }
+                 contentItem: MaterialSymbol {
+                     horizontalAlignment: Text.AlignHCenter
+                     verticalAlignment: Text.AlignVCenter
+diff --git a/modules/ii/sidebarLeft/aiChat/MessageTextBlock.qml b/modules/ii/sidebarLeft/aiChat/MessageTextBlock.qml
+index fbf2a8d..c667eb0 100644
+--- a/modules/ii/sidebarLeft/aiChat/MessageTextBlock.qml
++++ b/modules/ii/sidebarLeft/aiChat/MessageTextBlock.qml
+@@ -159,7 +159,7 @@ ColumnLayout {
+             selectedTextColor: Appearance.m3colors.m3onSecondaryContainer
+             selectionColor: Appearance.colors.colSecondaryContainer
+             wrapMode: TextEdit.Wrap
+-            color: root.messageData?.thinking ? Appearance.colors.colSubtext : Appearance.colors.colOnLayer1
++            color: root.messageData?.thinking ? Appearance.colors.colOnSurfaceVariant : Appearance.colors.colOnLayer1
+             textFormat: renderMarkdown ? TextEdit.MarkdownText : TextEdit.PlainText
+             text: modelData
+ 
+diff --git a/services/Ai.qml b/services/Ai.qml
+index 6930d03..80ec340 100644
+--- a/services/Ai.qml
++++ b/services/Ai.qml
+@@ -839,8 +839,12 @@ Singleton {
+                 root.addMessage(Translation.tr("This chat has changed no files"), root.interfaceRole);
+                 return;
+             }
+-            const patches = files.map(file => file.patch.split("```").join("`\u200b`\u200b`")).join("\n");
+-            root.addMessage(`${Translation.tr("Files changed in this chat:")}\n\n\`\`\`diff\n${patches}\n\`\`\``, root.interfaceRole);
++            // One block per file, so each gets its own name and +/- count as a header
++            const blocks = files.map(file => {
++                const patch = CF.StringUtils.cleanDiff(file.patch).split("```").join("`\u200b`\u200b`");
++                return `\`\`\`diff\n${patch}\n\`\`\``;
++            }).join("\n\n");
++            root.addMessage(`${Translation.tr("Files changed in this chat:")}\n\n${blocks}`, root.interfaceRole);
+         });
+     }
+ 
+diff --git a/services/ai/OpenCodeApiStrategy.qml b/services/ai/OpenCodeApiStrategy.qml
+index 0e8da80..03341ce 100644
+--- a/services/ai/OpenCodeApiStrategy.qml
++++ b/services/ai/OpenCodeApiStrategy.qml
+@@ -150,11 +150,18 @@ ApiStrategy {
+         return qsTr("Approve runs this once.");
+     }
+ 
++    // Drops the "Index:" and "=====" lines above a diff. Display only: the helper keeps the whole
++    // patch for /undo. Same as StringUtils.cleanDiff, kept here so this file loads on its own in tests.
++    function cleanDiff(patch) {
++        return (patch ?? "").split("\n").filter(line => !/^Index: /.test(line) && !/^={3,}\s*$/.test(line)).join("\n");
++    }
++
+     // A card must show everything it's asking about: what the title doesn't hold goes in the detail
+     function cardFor(request) {
+         const resources = request.resources ?? [];
+         const named = ["edit", "write", "read"].includes(request.action) && resources.length === 1 && !resources[0].includes("\n");
+-        const extra = request.patch?.length > 0 ? request.patch : (request.detail ?? "");
++        // Shown without the "Index:"/"=====" lines; the helper keeps the whole patch for /undo
++        const extra = request.patch?.length > 0 ? cleanDiff(request.patch) : (request.detail ?? "");
+         const listed = named || (request.action === "subagent" && extra.length > 0); // The detail already says which agent
+         const body = [listed ? "" : resources.join("\n"), extra].filter(part => part.length > 0).join("\n");
+         return {
