@@ -1,0 +1,60 @@
+diff --git a/modules/ii/sidebarLeft/AiChat.qml b/modules/ii/sidebarLeft/AiChat.qml
+index eb950e1..1eff78c 100644
+--- a/modules/ii/sidebarLeft/AiChat.qml
++++ b/modules/ii/sidebarLeft/AiChat.qml
+@@ -655,6 +655,34 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+                 }
+             }
+ 
++            // Steps through the suggestions shown (at most 10), wrapping at both ends
++            function move(step) {
++                const shown = Math.min(root.suggestionList.length, 10);
++                if (shown === 0) return;
++                suggestions.selectedIndex = (suggestions.selectedIndex + step + shown) % shown;
++            }
++
++            // Up and Down go to the row above or below, to the suggestion nearest the current one
++            // across, wrapping from the last row to the first. The rows come from the real layout.
++            function moveRow(step) {
++                const shown = Math.min(root.suggestionList.length, 10);
++                const current = suggestionRepeater.itemAt(suggestions.selectedIndex);
++                if (shown === 0 || !current) return;
++                const items = [];
++                for (let i = 0; i < shown; i++) {
++                    const item = suggestionRepeater.itemAt(i);
++                    if (item) items.push({ index: i, y: item.y, x: item.x + item.width / 2 });
++                }
++                const rows = [...new Set(items.map(item => item.y))].sort((a, b) => a - b);
++                if (rows.length < 2) { suggestions.move(step); return; } // One row: same as left and right
++                const row = rows.indexOf(current.y);
++                const target = rows[(row + step + rows.length) % rows.length];
++                const across = current.x + current.width / 2;
++                const best = items.filter(item => item.y === target)
++                    .reduce((a, b) => Math.abs(b.x - across) < Math.abs(a.x - across) ? b : a);
++                suggestions.selectedIndex = best.index;
++            }
++
+             readonly property bool choosingModel: visible && messageInputField.text.startsWith(`${root.commandPrefix}model`)
+             // A function, not a binding: onTextChanged can run before bindings update
+             function mentionNow() {
+@@ -912,11 +940,18 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+                             if (event.key === Qt.Key_Tab) {
+                                 suggestions.acceptSelectedWord();
+                                 event.accepted = true;
++                            } else if (event.key === Qt.Key_Left && suggestions.visible) {
++                                // While the list shows, the arrows pick a suggestion; otherwise they move the cursor
++                                suggestions.move(-1);
++                                event.accepted = true;
++                            } else if (event.key === Qt.Key_Right && suggestions.visible) {
++                                suggestions.move(1);
++                                event.accepted = true;
+                             } else if (event.key === Qt.Key_Up && suggestions.visible) {
+-                                suggestions.selectedIndex = Math.max(0, suggestions.selectedIndex - 1);
++                                suggestions.moveRow(-1);
+                                 event.accepted = true;
+                             } else if (event.key === Qt.Key_Down && suggestions.visible) {
+-                                suggestions.selectedIndex = Math.min(root.suggestionList.length - 1, suggestions.selectedIndex + 1);
++                                suggestions.moveRow(1);
+                                 event.accepted = true;
+                             } else if ((event.key === Qt.Key_Enter || event.key === Qt.Key_Return)) {
+                                 if (event.modifiers & Qt.ShiftModifier) {

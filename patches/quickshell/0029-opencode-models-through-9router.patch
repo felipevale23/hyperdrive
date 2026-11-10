@@ -1,0 +1,54 @@
+diff --git a/services/Ai.qml b/services/Ai.qml
+index 80ec340..e88203d 100644
+--- a/services/Ai.qml
++++ b/services/Ai.qml
+@@ -331,11 +331,22 @@ Singleton {
+         });
+     }
+ 
++    // Most go through the local 9router (provider "9router" in opencode.json), for its token
++    // savers and the Kiro models; start it with the 9router chip. The "direct" one skips it,
++    // so OpenCode still works while 9router is stopped.
+     function addOpencodeModels() {
+         [
+-            ["mistral-large-4", "Mistral Large 4", "mistralai/mistral-large-4-1t-a52b", "mistral-symbolic"],
+-            ["minimax-m3.1-flash", "MiniMax M3.1 Flash", "minimaxai/minimax-m3.1-flash", "spark-symbolic"],
+-            ["nemotron-3-ultra", "Nemotron 3 Ultra", "nvidia/nemotron-3-ultra-550b-a55b", "spark-symbolic"],
++            ["mistral-large-4", "Mistral Large 4", "9router/nvidia/mistralai/mistral-large-4-1t-a52b", "mistral-symbolic"],
++            ["minimax-m3.1-flash", "MiniMax M3.1 Flash", "9router/nvidia/minimaxai/minimax-m3.1-flash", "spark-symbolic"],
++            ["nemotron-3-ultra", "Nemotron 3 Ultra", "9router/nvidia/nvidia/nemotron-3-ultra-550b-a55b", "spark-symbolic"],
++            ["claude-sonnet-4.5", "Claude Sonnet 4.5 (Kiro)", "9router/kr/claude-sonnet-4.5", "spark-symbolic"],
++            ["claude-haiku-4.5", "Claude Haiku 4.5 (Kiro)", "9router/kr/claude-haiku-4.5", "spark-symbolic"],
++            ["deepseek-3.2", "DeepSeek 3.2 (Kiro)", "9router/kr/deepseek-3.2", "spark-symbolic"],
++            ["glm-5", "GLM-5 (Kiro)", "9router/kr/glm-5", "spark-symbolic"],
++            ["qwen3-coder-next", "Qwen3 Coder Next (Kiro)", "9router/kr/qwen3-coder-next", "spark-symbolic"],
++            ["minimax-m2.5", "MiniMax M2.5 (Kiro)", "9router/kr/minimax-m2.5", "spark-symbolic"],
++            ["gemini-3.6-flash", "Gemini 3.6 Flash", "9router/gemini/gemini-3.6-flash", "google-gemini-symbolic"],
++            ["mistral-large-4-direct", "Mistral Large 4 (direct)", "nvidia/mistralai/mistral-large-4-1t-a52b", "mistral-symbolic"],
+         ].forEach(([id, name, model, icon]) => {
+             root.addModel(`opencode-${id}`, {
+                 "name": `OpenCode: ${name}`,
+@@ -343,7 +354,7 @@ Singleton {
+                 "description": Translation.tr("Online through OpenCode | Keeps the chat in an OpenCode session. Asks before doing anything but reading the project. @ finds files, /agent switches Build and Plan"),
+                 "homepage": "https://opencode.ai",
+                 "endpoint": "http://127.0.0.1",
+-                "model": `nvidia/${model}`,
++                "model": model,
+                 "requires_key": false, // The helper reads the keyring itself
+                 "api_format": "opencode",
+             });
+@@ -839,12 +850,8 @@ Singleton {
+                 root.addMessage(Translation.tr("This chat has changed no files"), root.interfaceRole);
+                 return;
+             }
+-            // One block per file, so each gets its own name and +/- count as a header
+-            const blocks = files.map(file => {
+-                const patch = CF.StringUtils.cleanDiff(file.patch).split("```").join("`\u200b`\u200b`");
+-                return `\`\`\`diff\n${patch}\n\`\`\``;
+-            }).join("\n\n");
+-            root.addMessage(`${Translation.tr("Files changed in this chat:")}\n\n${blocks}`, root.interfaceRole);
++            const patches = files.map(file => file.patch.split("```").join("`\u200b`\u200b`")).join("\n");
++            root.addMessage(`${Translation.tr("Files changed in this chat:")}\n\n\`\`\`diff\n${patches}\n\`\`\``, root.interfaceRole);
+         });
+     }
+ 

@@ -1,0 +1,221 @@
+diff --git a/modules/ii/sidebarLeft/AiChat.qml b/modules/ii/sidebarLeft/AiChat.qml
+index 4dc9897..eb950e1 100644
+--- a/modules/ii/sidebarLeft/AiChat.qml
++++ b/modules/ii/sidebarLeft/AiChat.qml
+@@ -47,12 +47,37 @@ Item {
+         else Ai.addMessage(Translation.tr("This needs an OpenCode model. Pick one with /model"), Ai.interfaceRole);
+     }
+ 
++    // "/command typed" for a command with a list of arguments, else null
++    function argumentCommand(text) {
++        const match = text.match(new RegExp(`^${root.commandPrefix}(\\w+) (\\S*)$`));
++        const cmd = match ? root.commandNamed(match[1]) : null;
++        return cmd?.args ? { "cmd": cmd, "typed": match[2] } : null;
++    }
++    readonly property var instantCommands: ["agents", "approve", "reject", "history", "diff", "undo", "clear", "build", "plan"]
++    function commandNamed(name) {
++        return root.allCommands.find(cmd => cmd.name === name);
++    }
++
+     property var allCommands: [
+         {
+             name: "agent",
+             description: Translation.tr("Switch the OpenCode agent: build or plan"),
++            args: [
++                { name: "build", description: Translation.tr("Can change files and run commands, asking first") },
++                { name: "plan", description: Translation.tr("Reads and plans, can't edit files or run commands") },
++            ],
+             execute: args => root.opencodeOnly(() => Ai.setOpencodeAgent(args[0]))
+         },
++        {
++            name: "build",
++            description: Translation.tr("Switch to the Build agent: can change files and run commands, asking first"),
++            execute: () => root.opencodeOnly(() => Ai.setOpencodeAgent("build"))
++        },
++        {
++            name: "plan",
++            description: Translation.tr("Switch to the Plan agent: reads and plans, can't edit files or run commands"),
++            execute: () => root.opencodeOnly(() => Ai.setOpencodeAgent("plan"))
++        },
+         {
+             name: "agents",
+             description: Translation.tr("Open the agents panel: switch, call, watch and create agents"),
+@@ -71,6 +96,12 @@ Item {
+         {
+             name: "router",
+             description: Translation.tr("9router, the local AI router: start, stop, open or status"),
++            args: [
++                { name: "status", description: Translation.tr("Say whether 9router is running") },
++                { name: "start", description: Translation.tr("Start 9router on this computer") },
++                { name: "stop", description: Translation.tr("Stop 9router. Models through it stop working") },
++                { name: "open", description: Translation.tr("Open the 9router dashboard in the browser") },
++            ],
+             execute: args => {
+                 const action = (args[0] ?? "status").toLowerCase();
+                 if (action === "open") {
+@@ -645,6 +676,36 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+                 root.handleInput(`${root.commandPrefix}model ${modelId}`);
+             }
+ 
++            // Enter on "/rou" or "/router st": finish the word from the highlighted suggestion.
++            // A command that needs nothing more, or a finished argument, runs straight away.
++            // Returns false when the text is already a whole command, so Enter sends it as typed.
++            function completeCommand() {
++                if (!suggestions.visible || root.suggestionList.length === 0) return false;
++                const text = messageInputField.text;
++                const chosen = root.suggestionList[suggestions.selectedIndex] ?? root.suggestionList[0];
++                const found = root.argumentCommand(text);
++                if (found) {
++                    if (found.cmd.args.some(arg => arg.name === found.typed)) return false;
++                    const arg = chosen.displayName ?? chosen.name.split(" ").pop();
++                    messageInputField.clear();
++                    root.handleInput(`${root.commandPrefix}${found.cmd.name} ${arg}`);
++                    return true;
++                }
++                const typedName = text.match(new RegExp(`^${root.commandPrefix}(\\w*)$`));
++                if (!typedName || root.commandNamed(typedName[1])) return false;
++                const name = chosen.name.replace(root.commandPrefix, "");
++                const cmd = root.commandNamed(name);
++                if (!cmd) return false;
++                if (root.instantCommands.includes(name)) {
++                    messageInputField.clear();
++                    root.handleInput(`${root.commandPrefix}${name}`);
++                } else {
++                    messageInputField.text = `${root.commandPrefix}${name} `;
++                    messageInputField.cursorPosition = messageInputField.text.length;
++                }
++                return true;
++            }
++
+             function acceptSuggestion(word) {
+                 const words = messageInputField.text.trim().split(/\s+/);
+                 if (words.length > 0) {
+@@ -727,15 +788,14 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+                                 return;
+                             } else if (suggestions.mentionNow()) {
+                                 mentionTimer.restart();
+-                            } else if (messageInputField.text.startsWith(`${root.commandPrefix}agent`)) {
+-                                const typed = messageInputField.text.split(" ")[1] ?? "";
+-                                root.suggestionList = [
+-                                    { name: "build", description: Translation.tr("Can change files, asking first") },
+-                                    { name: "plan", description: Translation.tr("Reads and plans, can't edit files or run commands") },
+-                                ].filter(agent => agent.name.startsWith(typed)).map(agent => ({
+-                                    name: `${root.commandPrefix}agent ${agent.name}`,
+-                                    displayName: agent.name,
+-                                    description: agent.description
++                            } else if (root.argumentCommand(messageInputField.text)) {
++                                // "/command partial": suggest that command's arguments
++                                const found = root.argumentCommand(messageInputField.text);
++                                const single = messageInputField.text.trim().split(/\s+/).length === 1;
++                                root.suggestionList = found.cmd.args.filter(arg => arg.name.startsWith(found.typed)).map(arg => ({
++                                    name: single ? `${root.commandPrefix}${found.cmd.name} ${arg.name}` : arg.name,
++                                    displayName: arg.name,
++                                    description: arg.description
+                                 }));
+                             } else if (messageInputField.text.startsWith(`${root.commandPrefix}model`)) {
+                                 root.suggestionQuery = messageInputField.text.split(" ")[1] ?? "";
+@@ -869,6 +929,8 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+                                 } else if (suggestions.choosingMention) {
+                                     suggestions.acceptSelectedWord();
+                                     event.accepted = true;
++                                } else if (suggestions.completeCommand()) {
++                                    event.accepted = true;
+                                 } else {
+                                     // Accept text. While a reply runs, keep a message in the box
+                                     const inputText = messageInputField.text;
+@@ -959,11 +1021,6 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+                 spacing: 4
+ 
+                 property var commandsShown: [
+-                    {
+-                        name: "",
+-                        sendDirectly: false,
+-                        dontAddSpace: true
+-                    },
+                     {
+                         name: "clear",
+                         sendDirectly: true
+@@ -973,6 +1030,7 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+                 ApiInputBoxIndicator {
+                     // Model indicator
+                     icon: "api"
++                    maxTextWidth: 150
+                     text: Ai.getModel().name.replace("OpenCode: ", "")
+                     tooltipText: Translation.tr("Current model: %1\nClick to choose another").arg(Ai.getModel().name)
+                     onClicked: {
+diff --git a/modules/ii/sidebarLeft/ApiInputBoxIndicator.qml b/modules/ii/sidebarLeft/ApiInputBoxIndicator.qml
+index 716f50e..b4a8cd6 100644
+--- a/modules/ii/sidebarLeft/ApiInputBoxIndicator.qml
++++ b/modules/ii/sidebarLeft/ApiInputBoxIndicator.qml
+@@ -9,6 +9,7 @@ Item { // Model indicator
+     property string icon: "api"
+     property string text: ""
+     property string tooltipText: ""
++    property real maxTextWidth: Number.POSITIVE_INFINITY // Longer text ends in …
+     signal clicked()
+     implicitHeight: rowLayout.implicitHeight + 4 * 2
+     implicitWidth: rowLayout.implicitWidth + 4 * 2
+@@ -26,6 +27,7 @@ Item { // Model indicator
+             font.pixelSize: Appearance.font.pixelSize.smaller
+             color: Appearance.m3colors.m3onSurface
+             elide: Text.ElideRight
++            Layout.maximumWidth: root.maxTextWidth
+             text: root.text
+             animateChange: true
+         }
+diff --git a/services/Ai.qml b/services/Ai.qml
+index e88203d..86544cc 100644
+--- a/services/Ai.qml
++++ b/services/Ai.qml
+@@ -336,22 +336,23 @@ Singleton {
+     // so OpenCode still works while 9router is stopped.
+     function addOpencodeModels() {
+         [
+-            ["mistral-large-4", "Mistral Large 4", "9router/nvidia/mistralai/mistral-large-4-1t-a52b", "mistral-symbolic"],
+-            ["minimax-m3.1-flash", "MiniMax M3.1 Flash", "9router/nvidia/minimaxai/minimax-m3.1-flash", "spark-symbolic"],
+-            ["nemotron-3-ultra", "Nemotron 3 Ultra", "9router/nvidia/nvidia/nemotron-3-ultra-550b-a55b", "spark-symbolic"],
+-            ["claude-sonnet-4.5", "Claude Sonnet 4.5 (Kiro)", "9router/kr/claude-sonnet-4.5", "spark-symbolic"],
+-            ["claude-haiku-4.5", "Claude Haiku 4.5 (Kiro)", "9router/kr/claude-haiku-4.5", "spark-symbolic"],
+-            ["deepseek-3.2", "DeepSeek 3.2 (Kiro)", "9router/kr/deepseek-3.2", "spark-symbolic"],
+-            ["glm-5", "GLM-5 (Kiro)", "9router/kr/glm-5", "spark-symbolic"],
+-            ["qwen3-coder-next", "Qwen3 Coder Next (Kiro)", "9router/kr/qwen3-coder-next", "spark-symbolic"],
+-            ["minimax-m2.5", "MiniMax M2.5 (Kiro)", "9router/kr/minimax-m2.5", "spark-symbolic"],
+-            ["gemini-3.6-flash", "Gemini 3.6 Flash", "9router/gemini/gemini-3.6-flash", "google-gemini-symbolic"],
+-            ["mistral-large-4-direct", "Mistral Large 4 (direct)", "nvidia/mistralai/mistral-large-4-1t-a52b", "mistral-symbolic"],
+-        ].forEach(([id, name, model, icon]) => {
++            ["mistral-large-4", "Mistral Large 4", "9router/nvidia/mistralai/mistral-large-4-1t-a52b", "mistral-symbolic", "Recommended for everyday chat and small edits. Free (NVIDIA)"],
++            ["minimax-m3.1-flash", "MiniMax M3.1 Flash", "9router/nvidia/minimaxai/minimax-m3.1-flash", "spark-symbolic", "Quick questions and light tasks; runs the subagents. Free (NVIDIA)"],
++            ["nemotron-3-ultra", "Nemotron 3 Ultra", "9router/nvidia/nvidia/nemotron-3-ultra-550b-a55b", "spark-symbolic", "Planning, architecture and reviewing a plan; the advisor. Free (NVIDIA)"],
++            ["claude-sonnet-4.5", "Claude Sonnet 4.5 (Kiro)", "9router/kr/claude-sonnet-4.5", "spark-symbolic", "Hardest coding: multi-file changes and debugging. Uses Kiro credits"],
++            ["claude-haiku-4.5", "Claude Haiku 4.5 (Kiro)", "9router/kr/claude-haiku-4.5", "spark-symbolic", "Fast and capable for routine coding. Uses Kiro credits"],
++            ["deepseek-3.2", "DeepSeek 3.2 (Kiro)", "9router/kr/deepseek-3.2", "spark-symbolic", "Step-by-step reasoning and maths. Uses Kiro credits"],
++            ["glm-5", "GLM-5 (Kiro)", "9router/kr/glm-5", "spark-symbolic", "Coding and tool use, without Claude. Uses Kiro credits"],
++            ["qwen3-coder-next", "Qwen3 Coder Next (Kiro)", "9router/kr/qwen3-coder-next", "spark-symbolic", "Coding, without Claude. Uses Kiro credits"],
++            ["minimax-m2.5", "MiniMax M2.5 (Kiro)", "9router/kr/minimax-m2.5", "spark-symbolic", "General tasks and tool use. Uses Kiro credits"],
++            ["gemini-3.6-flash", "Gemini 3.6 Flash", "9router/gemini/gemini-3.6-flash", "google-gemini-symbolic", "Fast, and reads images. Free tier (Gemini)"],
++            ["mistral-large-4-direct", "Mistral Large 4 (direct)", "nvidia/mistralai/mistral-large-4-1t-a52b", "mistral-symbolic", "Skips 9router: use it while 9router is stopped. Free (NVIDIA)"],
++        ].forEach(([id, name, model, icon, hint]) => {
+             root.addModel(`opencode-${id}`, {
+                 "name": `OpenCode: ${name}`,
+                 "icon": icon,
+-                "description": Translation.tr("Online through OpenCode | Keeps the chat in an OpenCode session. Asks before doing anything but reading the project. @ finds files, /agent switches Build and Plan"),
++                // What it's for comes first: it's what the /model list shows
++                "description": `${Translation.tr(hint)} | ${Translation.tr("Through OpenCode: asks before doing anything but reading the project. @ finds files, /build and /plan switch agents")}`,
+                 "homepage": "https://opencode.ai",
+                 "endpoint": "http://127.0.0.1",
+                 "model": model,
+@@ -850,8 +851,12 @@ Singleton {
+                 root.addMessage(Translation.tr("This chat has changed no files"), root.interfaceRole);
+                 return;
+             }
+-            const patches = files.map(file => file.patch.split("```").join("`\u200b`\u200b`")).join("\n");
+-            root.addMessage(`${Translation.tr("Files changed in this chat:")}\n\n\`\`\`diff\n${patches}\n\`\`\``, root.interfaceRole);
++            // One block per file, so each gets its own name and +/- count as a header
++            const blocks = files.map(file => {
++                const patch = CF.StringUtils.cleanDiff(file.patch).split("```").join("`\u200b`\u200b`");
++                return `\`\`\`diff\n${patch}\n\`\`\``;
++            }).join("\n\n");
++            root.addMessage(`${Translation.tr("Files changed in this chat:")}\n\n${blocks}`, root.interfaceRole);
+         });
+     }
+ 
