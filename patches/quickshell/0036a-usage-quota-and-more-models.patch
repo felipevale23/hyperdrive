@@ -84,3 +84,25 @@
      }
  }
 +
+--- a/services/ai/OpenCodeApiStrategy.qml
++++ b/services/ai/OpenCodeApiStrategy.qml
+@@ -172,10 +172,17 @@
+         // Shown without the "Index:"/"=====" lines; the helper keeps the whole patch for /undo
+         const extra = request.patch?.length > 0 ? cleanDiff(request.patch) : (request.detail ?? "");
+         const listed = named || (request.action === "subagent" && extra.length > 0); // The detail already says which agent
+-        const body = [listed ? "" : resources.join("\n"), extra].filter(part => part.length > 0).join("\n");
++        const access = outside ? qsTr("Approving gives access to: %1").arg(resources.join(", ")) : "";
++        const body = [listed ? "" : (access.length > 0 ? access : resources.join("\n")), extra].filter(part => part.length > 0).join("\n");
++        // What the tool itself asked for. A permission only names a pattern: "/etc/*" for a read of /etc/hostname
++        const tool = request.tool ?? "";
++        const target = request.target ?? "";
++        const outside = request.action === "external_directory" && tool.length > 0 && target.length > 0;
++        const what = outside ? qsTr("%1, outside the project").arg(describe(tool, target))
++            : describe(request.action, named ? resources[0] : (["read", "grep", "glob"].includes(request.action) ? target : ""));
+         return {
+             "kind": "card",
+-            "title": qsTr("%1 wants to %2").arg(request.subagent ? qsTr("A subagent") : "OpenCode").arg(describe(request.action, named ? resources[0] : "")),
++            "title": qsTr("%1 wants to %2").arg(request.subagent ? qsTr("A subagent") : "OpenCode").arg(what),
+             "reason": reasonFor(request.action),
+             "effect": effectOf(request.action),
+             "lang": request.patch?.length > 0 ? "diff" : (request.action === "shell" ? "bash" : (request.detail?.length > 0 ? "json" : "txt")),

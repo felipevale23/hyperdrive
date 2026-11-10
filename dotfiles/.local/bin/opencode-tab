@@ -962,6 +962,7 @@ def run_turn(model, session, mode, agent, folder, text, regen=0, plain_ok=True):
                 emit({"type": "permission", "id": data["id"], "session": owner, "action": data.get("action", ""),
                       "resources": data.get("resources", []), "subagent": owner != sid,
                       "chatTool": chat_key(data) if CHAT_TOOLS.fullmatch(chat_key(data)) else "",
+                      "tool": tools.get(source, {}).get("name", ""), "target": target_of(tool_input),  # What the tool itself asked for
                       "detail": json.dumps(tool_input, indent=2) if data.get("action") in ("subagent", "memory_remember") else "",
                       "patch": "\n".join(entry.get("patch", "") for entry in files)})
             elif kind == "permission.replied":
