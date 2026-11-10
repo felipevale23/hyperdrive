@@ -44,6 +44,7 @@ which are checked before each message, and nothing is sent without them. An unan
 request is denied after PERMISSION_TIMEOUT.
 """
 import base64
+import datetime
 import ctypes
 import fcntl
 import http.client
@@ -71,8 +72,12 @@ TOOLS_OFF = [{"action": "*", "resource": "*", "effect": "deny"}]
 TOOLS_ON = [{"action": "*", "resource": "*", "effect": "ask"}] + [
     {"action": tool, "resource": "*", "effect": "deny"}
      for tool in ("execute", "question", "skill", "browser")]
+# Library docs and web search are big tool definitions sent with every message, so only the research
+# subagent has them: the main chat denies them, and the helper gives a research child TOOLS_ON when it starts.
+RESEARCH_TOOLS = ("context7_*", "exa_*")
+MAIN_ON = TOOLS_ON + [{"action": tool, "resource": "*", "effect": "deny"} for tool in RESEARCH_TOOLS]
 # The session's rules override the agent's own, so Plan has to be made read-only here.
-PLAN_ON = TOOLS_ON + [{"action": tool, "resource": "*", "effect": "deny"} for tool in ("edit", "shell")]
+PLAN_ON = MAIN_ON + [{"action": tool, "resource": "*", "effect": "deny"} for tool in ("edit", "shell")]
 AGENTS = ("build", "plan")
 BUILT_IN = {"build": ("primary", "Changes files and runs commands, asking first"),
             "plan": ("primary", "Reads and plans, can't edit files or run commands"),
@@ -107,6 +112,20 @@ OLD_ADVISOR_NOTES = (
 "\n\n[Team rule: before a plan of more than a few steps, a risky or hard to undo change, or after two "
                      "failed attempts, call the advisor subagent first with the goal, what you know and your plan. Follow its "
                      "advice unless you have a clear reason not to. Don't call it for simple tasks.]",)
+# Plain chat goes without tool definitions, which are most of the prompt. If the message turns out to need
+# a tool, the model answers only NEEDS_TOOLS, and the turn runs again with tools. messages() takes it off.
+NEEDS_TOOLS = "NEEDS_TOOLS"
+CHAT_ONLY_NOTE = ("\n\n[This message is sent without tools. Greetings, small talk and questions you can answer from what "
+                  "you know never need tools: answer them normally. Only if answering needs reading or changing files, running "
+                  "a command, looking something up or calling an agent, reply with exactly NEEDS_TOOLS and nothing else.]")
+# Wordings already sent in past chats, for messages() to take off
+OLD_CHAT_ONLY_NOTES = ("\n\n[This message is sent without tools. If answering needs reading or changing files, running a "
+                       "command, looking something up or calling an agent, reply with exactly NEEDS_TOOLS and nothing else.]",)
+RETRY_WITH_TOOLS = object()
+# After NEEDS_TOOLS the chat goes on with this hidden follow-up, tools on. Dropping the tool-less try and asking
+# again failed on Kiro, which keeps its own copy of the conversation and answered NEEDS_TOOLS again.
+TOOLS_FOLLOW_UP = "[Tools are on now. Go ahead and answer my previous message, using them.]"
+RETRY_NOTE = "\n\n[You have your tools now. Use them to answer; never reply NEEDS_TOOLS.]"  # older retries
 MEMORY = os.path.expanduser("~/.agents/memory.md")
 MEMORY_LIMIT = 50  # facts; all of them go to the model in every new chat
 FACT_LIMIT = 300
@@ -244,7 +263,7 @@ def team():
     files = agent_files()
     return {"advising": advising(), "budget": budget(), "thinking": thinking_mode(), "advisor": files.get("advisor", {}).get("model", ""),
             "hypervisor": files.get("hypervisor", {}).get("model", ""),
-            "subagents": config.get("agent", {}).get("general", {}).get("model", ""), "models": models_in(config)}
+            "subagents": config.get("agents", {}).get("general", {}).get("model", ""), "models": models_in(config)}
 
 
 def memory():
@@ -296,12 +315,18 @@ def memory_note(mode):
     return note + (MEMORY_RULE if mode == "tools" else "")
 
 
+def with_variant(old, new):
+    """NEW keeps OLD's thinking level ("#deep"), unless it names its own."""
+    return new if "#" in new or "#" not in (old or "") else f"{new}#{old.split('#', 1)[1]}"
+
+
 def set_agent_model(name, model):
     path = os.path.join(AGENT_FILES, f"{name}.md")
     with open(path, encoding="utf-8") as file:
         text = file.read()
+    old = (re.search(r"^model: (.*)$", text, re.M) or [None, ""])[1]
     with open(path, "w", encoding="utf-8") as file:
-        file.write(re.sub(r"^model: .*$", f"model: {model}", text, count=1, flags=re.M))
+        file.write(re.sub(r"^model: .*$", f"model: {with_variant(old, model)}", text, count=1, flags=re.M))
 
 
 def team_set(role, value):
@@ -323,7 +348,7 @@ def team_set(role, value):
             json.dump(settings, file)
         return team()
     config = read_config()
-    if role not in ("advisor", "hypervisor", "subagents") or value not in [item["id"] for item in models_in(config)]:
+    if role not in ("advisor", "hypervisor", "subagents") or value.split("#")[0] not in [item["id"] for item in models_in(config)]:
         raise RuntimeError("pick one of the models in the list")
     if role in ("advisor", "hypervisor"):
         if role not in agent_files():
@@ -334,7 +359,8 @@ def team_set(role, value):
         if name not in ("advisor", "hypervisor") and fields.get("mode") == "subagent":  # they keep their own chains
             set_agent_model(name, value)
     for name in ("general", "explore"):
-        config.setdefault("agent", {}).setdefault(name, {})["model"] = value
+        entry = config.setdefault("agents", {}).setdefault(name, {})
+        entry["model"] = with_variant(entry.get("model"), value)
     temporary = f"{CONFIG}.tmp"
     with open(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as file:
         json.dump(config, file, indent=2)
@@ -404,7 +430,7 @@ def busy():
 def rules_for(mode, agent):
     if mode == "off":
         return TOOLS_OFF
-    return PLAN_ON if agent == "plan" else TOOLS_ON
+    return PLAN_ON if agent == "plan" else MAIN_ON
 JOURNALS = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "opencode-tab")
 START_TIMEOUT = 45  # seconds to wait for the server
 EVENT_TIMEOUT = 180  # seconds of silence on the event stream, heartbeats included
@@ -648,6 +674,37 @@ def usage(session):
             "context": context, "budget": budget()}
 
 
+ROUTER_DB = os.path.expanduser("~/.9router/db/data.sqlite")
+
+
+def utc_now():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def served_since(started):
+    """The models 9router really used since STARTED, in order, with request counts. A combo like
+    chat-chain names a list; this is who answered. 9router writes a row once a request ends, so wait a moment."""
+    import sqlite3
+    rows = []
+    for _ in range(5):
+        try:
+            with sqlite3.connect(f"file:{ROUTER_DB}?mode=ro", uri=True, timeout=2) as db:
+                rows = db.execute("select provider, model, status from usageHistory where timestamp >= ? order by timestamp",
+                                  (started,)).fetchall()
+        except sqlite3.Error:
+            return []
+        if rows:
+            break
+        time.sleep(0.2)
+    served = []
+    for provider, name, status in rows:
+        if served and served[-1]["provider"] == provider and served[-1]["model"] == name:
+            served[-1]["requests"] += 1
+        else:
+            served.append({"provider": provider, "model": name, "requests": 1, "ok": status == "ok"})
+    return served
+
+
 def model_info(api, model):
     """The model's entry in OpenCode's list (limit, variants), or {}."""
     provider, _, name = model.partition("/")
@@ -667,10 +724,16 @@ def model_limit(api, model):
     return (model_info(api, model).get("limit") or {}).get("context")
 
 
+def turn_starts(items):
+    """Indexes of the user messages that start a turn. The helper's follow-up after NEEDS_TOOLS belongs to the turn before."""
+    return [i for i, item in enumerate(items)
+            if item.get("type") == "user" and not item.get("text", "").startswith(TOOLS_FOLLOW_UP)]
+
+
 def drop_last_turns(api, session, count):
     """Removes the newest COUNT user messages and what followed them from the session's history. Files stay as they are."""
     items = all_messages(api, session)
-    users = [i for i, item in enumerate(items) if item.get("type") == "user"]
+    users = turn_starts(items)
     if count < 1 or not users:
         return
     first = users[-min(count, len(users))]
@@ -738,13 +801,17 @@ def target_of(tool_input):
 def send(model, session, mode, agent, folder, text):
     die_with_parent()
     marker = turn_marker()
+    regen = os.environ.get("OPENCODE_TAB_REGEN", "")
     try:
-        return run_turn(model, session, mode, agent, folder, text)
+        result = run_turn(model, session, mode, agent, folder, text, int(regen) if regen.isdigit() else 0, True)
+        if isinstance(result, tuple) and result[0] is RETRY_WITH_TOOLS:
+            result = run_turn(model, result[1], mode, agent, folder, TOOLS_FOLLOW_UP, 0, False)
+        return result
     finally:
         os.unlink(marker)
 
 
-def run_turn(model, session, mode, agent, folder, text):
+def run_turn(model, session, mode, agent, folder, text, regen=0, plain_ok=True):
     active = {}
     timers = {}
     timed_out = set()
@@ -752,7 +819,7 @@ def run_turn(model, session, mode, agent, folder, text):
     asked_files = {}
     family = set()  # this turn's session and every subagent session under it
     spent = {}  # tokens by session in this turn: agent, model, steps and token counts
-    turn = {"prompt": 0, "warned": False, "limit": None}
+    turn = {"prompt": 0, "warned": False, "limit": None, "started": utc_now()}
 
     def blank(agent, used_model):
         return {"agent": agent, "model": used_model, "steps": 0, "input": 0, "cache": 0, "output": 0, "reasoning": 0}
@@ -776,7 +843,8 @@ def run_turn(model, session, mode, agent, folder, text):
     def turn_usage():
         if turn["limit"] is None and "api" in active:  # a server that just started may not have listed its models yet
             turn["limit"] = model_limit(active["api"], model)
-        record = {"agents": [entry for entry in spent.values() if entry["steps"] > 0],
+        record = {"served": served_since(turn["started"]) if model.startswith("9router/") else [],
+                  "agents": [entry for entry in spent.values() if entry["steps"] > 0],
                   "context": {"used": turn["prompt"], "limit": turn["limit"]} if turn["prompt"] else None}
         emit({"type": "turn_usage", **record})
         try:
@@ -799,27 +867,33 @@ def run_turn(model, session, mode, agent, folder, text):
 
     signal.signal(signal.SIGTERM, stop)
     try:
-        api = connect()
         level, why = choose_thinking(text, thinking_mode())
+        if not plain_ok and level == "off":
+            why = "plain chat, but it needed tools"
+        emit({"type": "thinking", "level": level, "reason": why})  # at once, so a quick answer shows no waiting animation
+        api = connect()
         info = model_info(api, model)
         variant = level if level in {item.get("id") for item in info.get("variants") or []} else None
-        sid = prepare_session(api, session, model, rules_for(mode, agent), " ".join(text.split())[:60] or "AI tab", agent, folder,
-                              variant)
-        regen = os.environ.get("OPENCODE_TAB_REGEN", "")
-        if session and regen.isdigit() and int(regen) > 0:
-            drop_last_turns(api, sid, int(regen))
+        files, subagents, refused = read_mentions(text)
+        # Plain chat (auto picked no thinking, no agent called) tries without tools first
+        plain = plain_ok and mode == "tools" and thinking_mode() == "auto" and level == "off" and not subagents
+        sid = prepare_session(api, session, model, TOOLS_OFF if plain else rules_for(mode, agent),
+                              " ".join(text.split())[:60] or "AI tab", agent, folder, variant)
+        if session and regen > 0:
+            drop_last_turns(api, sid, regen)
         family.add(sid)
         active.update(api=api, id=sid)
         emit({"type": "session", "id": sid})
         spent[sid] = blank(agent, model)
         turn["limit"] = (info.get("limit") or {}).get("context")
-        emit({"type": "thinking", "level": level if variant else "default", "reason": why if variant else
-              "this model has no thinking levels"})
+        if not variant:
+            emit({"type": "thinking", "level": "default", "reason": "this model has no thinking levels"})
 
-        note = ADVISOR_NOTE if mode == "tools" and advising() else ""
+        note = CHAT_ONLY_NOTE if plain else (ADVISOR_NOTE if mode == "tools" and advising() else "")
+
         if not session:  # A chat keeps what it started with, so only a new one needs it
-            note = memory_note(mode) + note
-        files, subagents, refused = read_mentions(text)
+            note = memory_note("off" if plain else mode) + note
+        held = []  # a tool-less reply waits here, in case it is only NEEDS_TOOLS
         if files or refused:
             emit({"type": "attached", "files": [item["name"] for item in files], "refused": refused})
 
@@ -839,6 +913,11 @@ def run_turn(model, session, mode, agent, folder, text):
             elif kind == "session.created" and data.get("parentID") in family:
                 family.add(data.get("sessionID"))
                 spent[data.get("sessionID")] = blank(data.get("agent", "") or "subagent", "")
+                if data.get("agent") == "research" and mode == "tools" and not plain:
+                    try:  # its own rules, so it has the docs and web search tools the main chat goes without
+                        api.call("PATCH", f"/api/session/{data.get('sessionID')}", {"permissions": TOOLS_ON}, timeout=5)
+                    except (OSError, http.client.HTTPException):
+                        pass
                 emit({"type": "agent", "id": data.get("sessionID"), "name": data.get("agent", ""),
                       "task": data.get("title", ""), "state": "running"})
             elif data.get("sessionID") not in family:
@@ -857,7 +936,10 @@ def run_turn(model, session, mode, agent, folder, text):
             elif data.get("sessionID") != sid and kind in ("session.text.delta", "session.reasoning.delta"):
                 continue  # a subagent's reply comes back to the model as a tool result
             elif kind == "session.text.delta":
-                emit({"type": "text", "delta": data.get("delta", "")})
+                if plain:
+                    held.append(data.get("delta", ""))
+                else:
+                    emit({"type": "text", "delta": data.get("delta", "")})
             elif kind == "session.reasoning.delta":
                 emit({"type": "reasoning", "delta": data.get("delta", "")})
             elif kind == "session.usage.updated":
@@ -909,6 +991,13 @@ def run_turn(model, session, mode, agent, folder, text):
                     timer.cancel()
                 family.discard(sid)
                 interrupt_all()  # a background subagent must not outlive the turn
+                reply_text = "".join(held)
+                if plain and NEEDS_TOOLS in reply_text:
+                    reply_text = reply_text.replace(NEEDS_TOOLS, "").strip(" \n\t`*_.")
+                    if kind.endswith("succeeded") and not reply_text:
+                        return (RETRY_WITH_TOOLS, sid)
+                if reply_text:
+                    emit({"type": "text", "delta": reply_text})
                 turn_usage()  # before the end, which the tab treats as the last event
                 emit({"type": kind.rsplit(".", 1)[1], "error": (data.get("error") or {}).get("message")})
                 return 0
@@ -969,13 +1058,15 @@ def messages(session):
     for item in found:
         if item.get("type") == "user":
             text = item.get("text", "")
-            for note in (ADVISOR_NOTE, *OLD_ADVISOR_NOTES):
+            for note in (ADVISOR_NOTE, *OLD_ADVISOR_NOTES, CHAT_ONLY_NOTE, *OLD_CHAT_ONLY_NOTES, RETRY_NOTE):
                 text = text.removesuffix(note)
             text = text.removesuffix(MEMORY_RULE)
+            if text.strip() == TOOLS_FOLLOW_UP:
+                continue  # the helper's own follow-up after NEEDS_TOOLS
             result.append({"role": "user", "text": MEMORY_NOTE.sub("", text)})
         elif item.get("type") == "assistant":
             text = "".join(part.get("text", "") for part in item.get("content", []) if part.get("type") == "text")
-            if text:
+            if text and text.strip(" \n`*_.") != NEEDS_TOOLS:
                 result.append({"role": "assistant", "text": text})
     return result
 
@@ -1009,7 +1100,7 @@ def undo(session):
     api = connect()
     use_session_folder(data_of(checked(api.call("GET", f"/api/session/{session}"))))
     items = all_messages(api, session)
-    last = max((i for i, item in enumerate(items) if item.get("type") == "user"), default=None)
+    last = max(turn_starts(items), default=None)
     if last is None:
         raise RuntimeError("nothing to undo")
     tools = finished_tools(items[last:])

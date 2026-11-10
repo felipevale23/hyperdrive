@@ -104,10 +104,12 @@ Built with it, in the order applied:
   `/usage` (and `/usage budget N`), a budget warning note, and 9router's day in the chip's tooltip.
 - `0033` model tiers: "Fast chat (auto fallback)" first; agents panel rows no longer overlap and gain a Hypervisor row.
 - `0034` thinking per prompt: no thinking for plain chat, some for reasoning questions, deep for "think hard" (EN and PT cues, `/think` to fix it), shown on the usage line; regenerate with another model (⇄ button, `/regen`) that replaces the turn in the OpenCode session; CPU, RAM and GPU only for local models.
+- `0035` quick answers show no waiting animation; the reply line says which model really answered a combo ("answered by …", from 9router's request history); the agents panel shows each role's thinking level ("Advisor · deep").
+  With it in the helper: plain chat goes without tools and retries through a hidden follow-up when the model answers NEEDS_TOOLS (Kiro keeps its own copy of the chat, so rewriting history didn't work); Context7 and Exa moved to a `research` subagent; per-role thinking (advisor and hypervisor `#deep`, subagents `#off`); and `opencode.json` uses `agents`, which OpenCode 2 reads (the old `agent` section was ignored).
 
 Not checked on screen: the `/model` hints, the reply usage line, the agents panel after the fix, and the chip tooltip.
 
-### Step 3: `/resume` keeps the whole story (patch `0035`)
+### Step 3: `/resume` keeps the whole story (patch `0036`)
 
 `messages()` in the helper drops tool parts, so a denied turn comes back as a question with no answer. Return tool parts and rebuild
 steps and answered cards from them. Old cards must come back answered and can't be actionable.
@@ -150,7 +152,7 @@ The tab keeps its role as a sidebar. It gets what you'd open the web app for, no
 | Providers, servers, plugins, integrations, export | Not in the tab. Keep using the web app or config | Keys stay in the keyring | Out |
 | Theme, fonts, shortcuts, notifications, language | Not needed: the shell owns these | | Out |
 
-### Step 4: panels (patch `0036`)
+### Step 4: panels (patch `0037`)
 
 A `SecondaryTabBar` under the header, shown only on OpenCode models. Direct models keep today's layout.
 
@@ -172,14 +174,14 @@ At the 750 px width (`Ctrl+O`), Changes and Files can show a list beside the con
 
 **Done when** panels switch by mouse and keyboard, the open chat survives switching, and direct models look unchanged.
 
-### Step 5: Chats panel (patch `0037`)
+### Step 5: Chats panel (patch `0038`)
 
 Replaces typing `/history` and `/resume N`. Chats grouped by folder, newest first, with a search box. Click to resume, and the folder comes
 with it. Rename through `PATCH /api/session/{id}`. Delete asks first and removes the journal. Keep the commands working.
 
 **Done when** the test chats can be deleted from the panel, and a chat in another folder opens with the right chip.
 
-### Step 6: Changes panel (patch `0038`)
+### Step 6: Changes panel (patch `0039`)
 
 The files this chat changed, each opening its diff, with undo for the last turn. In a git repo, a second view shows all uncommitted changes
 from `GET /api/vcs/diff`. In a plain folder only the chat's own view exists, because OpenCode has no snapshots there. Read-only otherwise:
@@ -187,13 +189,13 @@ no stage or commit buttons.
 
 **Done when** the numbers match `git diff` in a repo, and a plain folder shows the chat's changes with a clear note.
 
-### Step 7: Context panel (patch `0039`)
+### Step 7: Context panel (patch `0040`)
 
 Tokens against the model's limit, cost, model and agent, folder, and the todo list. Tokens leave the status pill here.
 
 **Done when** totals match the session in `opencode.db`.
 
-### Step 8: Files panel (patch `0040`)
+### Step 8: Files panel (patch `0041`)
 
 A tree of the chat's folder, a read-only viewer using the code block, and search. A click on "Add to message" inserts an `@` mention, so
 the normal checks run. New helper commands `list` and `read`, both limited by `safe_path`. Private files show with a padlock and no content.

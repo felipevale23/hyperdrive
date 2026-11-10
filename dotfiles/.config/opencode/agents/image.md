@@ -1,7 +1,7 @@
 ---
 description: Creates images from a text description. Use when asked for an image, icon or illustration.
 mode: subagent
-model: 9router/chat-chain
+model: 9router/chat-chain#off
 ---
 You create images. Turn the request into one detailed image prompt, then run this with the shell tool:
 

@@ -299,20 +299,6 @@
     }
   },
   "model": "9router/chat-chain",
-  "agent": {
-    "build": {
-      "model": "9router/chat-chain"
-    },
-    "plan": {
-      "model": "9router/advisor-chain"
-    },
-    "general": {
-      "model": "9router/chat-chain"
-    },
-    "explore": {
-      "model": "9router/chat-chain"
-    }
-  },
   "permission": {
     "*": "ask"
   },
@@ -337,6 +323,20 @@
         ],
         "codemode": false
       }
+    }
+  },
+  "agents": {
+    "build": {
+      "model": "9router/chat-chain"
+    },
+    "plan": {
+      "model": "9router/advisor-chain#deep"
+    },
+    "general": {
+      "model": "9router/chat-chain#off"
+    },
+    "explore": {
+      "model": "9router/chat-chain#off"
     }
   }
 }
