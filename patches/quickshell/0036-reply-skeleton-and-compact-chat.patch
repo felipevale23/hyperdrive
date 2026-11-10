@@ -758,3 +758,24 @@ index ee00ffd..6002fc1 100644
          z: 5
          width: implicitWidth
          height: implicitHeight
+--- a/modules/ii/sidebarLeft/aiChat/MessagePermissionBlock.qml
++++ b/modules/ii/sidebarLeft/aiChat/MessagePermissionBlock.qml
+@@ -172,6 +172,18 @@
+             }
+         }
+ 
++        AnswerButton { // Reading outside the project, for good: the file or folder goes on the always-allowed list
++            visible: root.live && (root.block.grantPath ?? "").length > 0
++            Layout.fillWidth: true
++            label: Translation.tr("Always allow reading this")
++            colLabel: Appearance.colors.colOnLayer2
++            colBackground: Appearance.colors.colLayer3
++            colBackgroundHover: Appearance.colors.colLayer3Hover
++            colRipple: Appearance.colors.colLayer3Active
++            onClicked: Ai.runAgentTool(["read-grant-add", root.block.grantPath], () => Ai.approveCommand(root.messageData),
++                error => Ai.addMessage(error, Ai.interfaceRole))
++        }
++
+         AnswerButton { // Only lookups. What they send still leaves this computer
+             visible: root.live && (root.block.chatTool ?? "").length > 0
+             Layout.fillWidth: true

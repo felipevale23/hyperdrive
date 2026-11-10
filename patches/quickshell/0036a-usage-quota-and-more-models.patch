@@ -86,7 +86,7 @@
 +
 --- a/services/ai/OpenCodeApiStrategy.qml
 +++ b/services/ai/OpenCodeApiStrategy.qml
-@@ -172,10 +172,17 @@
+@@ -172,15 +172,23 @@
          // Shown without the "Index:"/"=====" lines; the helper keeps the whole patch for /undo
          const extra = request.patch?.length > 0 ? cleanDiff(request.patch) : (request.detail ?? "");
          const listed = named || (request.action === "subagent" && extra.length > 0); // The detail already says which agent
@@ -106,3 +106,9 @@
              "reason": reasonFor(request.action),
              "effect": effectOf(request.action),
              "lang": request.patch?.length > 0 ? "diff" : (request.action === "shell" ? "bash" : (request.detail?.length > 0 ? "json" : "txt")),
+             "detail": body,
+             "chatTool": request.chatTool ?? "",
++            "grantPath": outside ? (request.readPath ?? "") : "", // A read outside the project can be allowed for good
+             "state": "pending",
+             "outcome": "",
+         };

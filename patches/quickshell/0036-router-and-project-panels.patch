@@ -531,7 +531,7 @@
 +}
 --- /dev/null
 +++ b/modules/ii/sidebarLeft/aiChat/ProjectPanel.qml
-@@ -0,0 +1,342 @@
+@@ -0,0 +1,406 @@
 +import qs.modules.common
 +import qs.modules.common.widgets
 +import qs.services
@@ -550,6 +550,7 @@
 +    property var info: null // From opencode-tab project-info: folder, instructions, skills
 +    property var facts: []
 +    property var knownFolders: []
++    property var grants: [] // Files and folders models may always read
 +    property string panelError: ""
 +    readonly property int factLimit: 50
 +
@@ -571,7 +572,10 @@
 +            instructionsField.text = info.instructions ?? "";
 +            Ai.runAgentTool(["memory"], facts => {
 +                root.facts = facts;
-+                Ai.runAgentTool(["folders"], folders => root.knownFolders = folders, () => {});
++                Ai.runAgentTool(["folders"], folders => {
++                    root.knownFolders = folders;
++                    Ai.runAgentTool(["read-grants"], grants => root.grants = grants, () => {});
++                }, () => {});
 +            }, error => root.panelError = error);
 +        }, error => root.panelError = error);
 +    }
@@ -591,6 +595,19 @@
 +            root.shown = false;
 +            Ai.chooseOpencodeFolder(folder); // A new chat in the new folder
 +        }, error => root.panelError = error);
++    }
++
++    function addGrant() {
++        root.panelError = "";
++        Ai.runAgentTool(["read-grant-add", grantField.text.trim()], grants => {
++            grantField.text = "";
++            root.grants = grants;
++        }, error => root.panelError = error);
++    }
++
++    function removeGrant(path) {
++        root.panelError = "";
++        Ai.runAgentTool(["read-grant-remove", path], grants => root.grants = grants, error => root.panelError = error);
 +    }
 +
 +    function addFact() {
@@ -841,6 +858,53 @@
 +                    tooltip: Translation.tr("Asks the model to pick lasting facts from this chat and save them. You approve each one")
 +                    enabled: !Ai.busy
 +                    onClicked: root.askModel(Translation.tr("Look back over this chat. Pick up to three lasting facts or preferences about me or my projects that a future chat should know. Save each with the memory_remember tool, one short sentence each. Skip anything private, temporary or already remembered. If there is nothing worth keeping, say so."))
++                }
++            }
++
++            SectionTitle { text: Translation.tr("Always allowed to read (%1)").arg(root.grants.length) }
++            Card {
++                Hint {
++                    text: Translation.tr("Files and folders outside the project that models can read without asking. A folder covers everything inside it. Private files (.env, .ssh, keys) stay blocked. They can still only read, never change.")
++                }
++                Repeater {
++                    model: root.grants
++                    delegate: RowLayout {
++                        id: grantRow
++                        required property var modelData
++                        Layout.fillWidth: true
++                        spacing: 6
++                        StyledText {
++                            Layout.fillWidth: true
++                            textFormat: Text.PlainText
++                            wrapMode: Text.WrapAnywhere
++                            color: grantRow.modelData.exists ? Appearance.colors.colOnLayer1 : Appearance.colors.colOnSurfaceVariant
++                            text: grantRow.modelData.exists ? grantRow.modelData.path : Translation.tr("%1 (gone)").arg(grantRow.modelData.path)
++                        }
++                        PanelButton {
++                            label: "✕"
++                            tooltip: Translation.tr("Ask again before reading this")
++                            onClicked: root.removeGrant(grantRow.modelData.path)
++                        }
++                    }
++                }
++                Hint {
++                    visible: root.grants.length === 0
++                    text: Translation.tr("None. Add a path, or press \"Always allow reading this\" on a read request.")
++                }
++                RowLayout {
++                    Layout.fillWidth: true
++                    spacing: 6
++                    MaterialTextField {
++                        id: grantField
++                        Layout.fillWidth: true
++                        placeholderText: Translation.tr("A full path, like ~/Documents/notes")
++                        onAccepted: root.addGrant()
++                    }
++                    PanelButton {
++                        label: Translation.tr("Add")
++                        enabled: grantField.text.trim().length > 0
++                        onClicked: root.addGrant()
++                    }
 +                }
 +            }
 +

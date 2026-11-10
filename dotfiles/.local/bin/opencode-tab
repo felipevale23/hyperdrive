@@ -771,6 +771,84 @@ def safe_read(request):
     return request.get("action") == "read" and bool(request.get("resources")) and all(map(safe_path, request["resources"]))
 
 
+READ_ACCESS = os.path.expanduser("~/.agents/read-access.json")  # Files and folders the user always lets models read
+READ_TOOLS = ("read", "grep", "glob", "list")
+
+
+def read_grants():
+    try:
+        with open(READ_ACCESS, encoding="utf-8") as file:
+            found = json.load(file)
+        return [entry for entry in found if isinstance(entry, str)] if isinstance(found, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def save_read_grants(grants):
+    os.makedirs(os.path.dirname(READ_ACCESS), exist_ok=True)
+    temporary = f"{READ_ACCESS}.{os.getpid()}"
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+        json.dump(grants, file, indent=2)
+        file.write("\n")
+    os.replace(temporary, READ_ACCESS)
+
+
+def read_grant_list():
+    return [{"path": path, "exists": os.path.exists(path)} for path in read_grants()]
+
+
+def read_grant_add(path):
+    """Always lets models read this file or folder, and everything inside a folder except private files."""
+    written = os.path.expanduser(path.strip())
+    if not os.path.isabs(written):
+        raise RuntimeError(f"use a full path, not {path}")
+    real = os.path.realpath(written)
+    home = os.path.realpath(os.path.expanduser("~"))
+    if not os.path.exists(real):
+        raise RuntimeError(f"{path} does not exist")
+    if not real.startswith(home + os.sep):
+        raise RuntimeError("it must be inside the home folder, and can't be the home folder itself")
+    inside = os.path.relpath(real, home)
+    if private_path(inside) or inside.split(os.sep)[0] in HOME_PRIVATE:
+        raise RuntimeError(f"{path} holds private files, so models can't be given it")
+    grants = read_grants()
+    if real not in grants:
+        save_read_grants(grants + [real])
+    return read_grant_list()
+
+
+def read_grant_remove(path):
+    grants = read_grants()
+    if path not in grants:
+        raise RuntimeError("that path is not in the list")
+    save_read_grants([entry for entry in grants if entry != path])
+    return read_grant_list()
+
+
+def read_covered(path):
+    """True when a granted file or folder holds this path, and it is not a private file inside it."""
+    real = os.path.realpath(os.path.join(FOLDER, os.path.expanduser(path)))
+    for grant in read_grants():
+        granted = os.path.realpath(grant)
+        if real == granted or real.startswith(granted + os.sep):
+            return not private_path(os.path.relpath(real, granted))
+    return False
+
+
+def read_granted(request, tool_name, tool_input):
+    """A read the user already allowed for good: skip the question."""
+    if not read_grants():
+        return False
+    if request.get("action") == "read":
+        resources = request.get("resources") or []
+        return bool(resources) and all(map(read_covered, resources))
+    if request.get("action") == "external_directory" and tool_name in READ_TOOLS and isinstance(tool_input, dict):
+        path = tool_input.get("path") or tool_input.get("filePath")
+        return isinstance(path, str) and bool(path) and read_covered(path)
+    return False
+
+
 def read_mentions(text):
     """Splits @mentions into prompt attachments. Unknown names stay plain text."""
     files, agents, refused = [], [], []
@@ -947,7 +1025,8 @@ def run_turn(model, session, mode, agent, folder, text, regen=0, plain_ok=True):
                 emit({"type": "usage", "tokens": data.get("tokens", {})})
             elif kind == "permission.asked":
                 owner = data.get("sessionID")
-                if safe_read(data) or chat_key(data) in chat_allowed(sid):
+                asking = tools.get((data.get("source") or {}).get("id"), {})
+                if safe_read(data) or chat_key(data) in chat_allowed(sid) or read_granted(data, asking.get("name", ""), asking.get("input")):
                     status, _ = api.call("POST", f"/api/session/{owner}/permission/{data['id']}/reply", {"decision": "once"})
                     if status == 204:
                         continue
@@ -963,6 +1042,7 @@ def run_turn(model, session, mode, agent, folder, text, regen=0, plain_ok=True):
                       "resources": data.get("resources", []), "subagent": owner != sid,
                       "chatTool": chat_key(data) if CHAT_TOOLS.fullmatch(chat_key(data)) else "",
                       "tool": tools.get(source, {}).get("name", ""), "target": target_of(tool_input),  # What the tool itself asked for
+                      "readPath": str(tool_input.get("path") or "") if isinstance(tool_input, dict) and tools.get(source, {}).get("name") in READ_TOOLS else "",
                       "detail": json.dumps(tool_input, indent=2) if data.get("action") in ("subagent", "memory_remember") else "",
                       "patch": "\n".join(entry.get("patch", "") for entry in files)})
             elif kind == "permission.replied":
@@ -1249,6 +1329,10 @@ def main():
         return report({"project-info": project_info, "project-new": project_new}[args[0]], args[1])
     if len(args) == 3 and args[0] == "project-save":
         return report(project_save, *args[1:])
+    if args == ["read-grants"]:
+        return report(read_grant_list)
+    if len(args) == 2 and args[0] in ("read-grant-add", "read-grant-remove"):
+        return report({"read-grant-add": read_grant_add, "read-grant-remove": read_grant_remove}[args[0]], args[1])
     if len(args) == 4 and args[0] == "reply":
         return reply(*args[1:])
     if args == ["sessions"]:
