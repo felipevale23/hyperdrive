@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Starts, stops and reports the local 9router (decolua/9router, built in ~/dev/ext/9router).
+#   9router-ctl start | stop | status    prints {"running":…,"pid":…,"url":…} as JSON
+# It listens on 127.0.0.1 only and runs until stopped or logout; nothing starts it on boot.
+set -uo pipefail
+
+DIR="${NINEROUTER_DIR:-$HOME/dev/ext/9router}"
+PORT=20128
+URL="http://127.0.0.1:$PORT"
+LOG="${XDG_RUNTIME_DIR:-/tmp}/9router.log"
+
+# The process listening on the port, only if it is this 9router build
+pid_of() {
+    local pid
+    pid=$(ss -ltnpH "sport = :$PORT" 2>/dev/null | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
+    [[ -n "$pid" && "$(readlink -f "/proc/$pid/cwd" 2>/dev/null)" == "$DIR/.next/standalone" ]] && echo "$pid"
+}
+
+status() {
+    local pid; pid=$(pid_of)
+    if [[ -n "$pid" ]]; then
+        printf '{"running":true,"pid":%s,"url":"%s"}\n' "$pid" "$URL"
+    elif ss -ltnH "sport = :$PORT" 2>/dev/null | grep -q .; then
+        printf '{"running":false,"error":"port %s is used by another program","url":"%s"}\n' "$PORT" "$URL"
+    else
+        printf '{"running":false,"url":"%s"}\n' "$URL"
+    fi
+}
+
+start() {
+    if [[ -n "$(pid_of)" ]]; then status; return 0; fi
+    if [[ ! -f "$DIR/.next/standalone/custom-server.js" || ! -f "$DIR/.env" ]]; then
+        printf '{"running":false,"error":"9router is not built in %s","url":"%s"}\n' "$DIR" "$URL"; return 1
+    fi
+    (
+        cd "$DIR/.next/standalone" || exit 1
+        set -a; . "$DIR/.env"; set +a
+        HOSTNAME=127.0.0.1 PORT=$PORT exec setsid node custom-server.js >>"$LOG" 2>&1 </dev/null
+    ) &
+    disown
+    for _ in $(seq 1 40); do
+        [[ -n "$(pid_of)" ]] && { status; return 0; }
+        sleep 0.5
+    done
+    printf '{"running":false,"error":"it did not start, see %s","url":"%s"}\n' "$LOG" "$URL"; return 1
+}
+
+stop() {
+    local pid; pid=$(pid_of)
+    if [[ -n "$pid" ]]; then
+        kill "$pid"
+        for _ in $(seq 1 20); do [[ -z "$(pid_of)" ]] && break; sleep 0.25; done
+    fi
+    status
+}
+
+case "${1:-status}" in
+    start) start ;;
+    stop) stop ;;
+    status) status ;;
+    *) echo "usage: 9router-ctl start|stop|status" >&2; exit 2 ;;
+esac
