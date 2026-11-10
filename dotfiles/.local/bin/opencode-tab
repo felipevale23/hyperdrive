@@ -51,6 +51,7 @@ import http.client
 import json
 import os
 import re
+import shlex
 import secrets
 import signal
 import subprocess
@@ -773,7 +774,17 @@ def safe_read(request):
 
 ACCESS_FILE = os.path.expanduser("~/.agents/allowed-paths.json")  # Files and folders the user always lets models read, or read and change
 OLD_ACCESS_FILE = os.path.expanduser("~/.agents/read-access.json")  # The first version: a plain list of paths, read only
-ACCESS_LEVELS = ("read", "write")
+PATH_LEVELS = ("read", "write")  # For files and folders
+ACCESS_LEVELS = PATH_LEVELS + ("run",)  # run: a command the user always lets models run in one project folder
+RUN_DENIED = {  # Never grantable: each can run anything, or change who you are, or move the machine's files
+    "sudo", "su", "doas", "pkexec", "bash", "sh", "zsh", "fish", "dash", "ksh", "csh", "tcsh", "eval", "exec", "env", "xargs",
+    "python", "python3", "node", "nodejs", "deno", "bun", "ruby", "perl", "php", "lua", "awk", "gawk", "sed", "find", "ssh",
+    "scp", "sftp", "rsync", "curl", "wget", "nc", "ncat", "socat", "telnet", "dd", "mkfs", "shred", "rm", "mv", "chmod",
+    "chown", "chgrp", "kill", "pkill", "killall", "systemctl", "reboot", "shutdown", "mount", "umount", "crontab", "at",
+    "docker", "podman", "pacman", "yay", "paru", "tee", "ln", "truncate", "source", ".", "nohup", "setsid", "timeout", "watch", "script", "gdb", "vim", "vi", "nano", "less",
+}
+RUN_NEEDS_SUBCOMMAND = {"git", "npm", "pnpm", "yarn", "cargo", "go", "pip", "pip3", "gh", "make", "kubectl", "systemctl", "uv", "poetry", "composer", "gem", "bundle"}
+RUN_UNSAFE = re.compile(r"[`$<>\n(){}\\]|(?<!&)&(?!&)")  # Substitution, redirection, a newline, a backgrounded command
 READ_TOOLS = ("read", "grep", "glob", "list")
 WRITE_TOOLS = ("edit", "write")
 AGENTS_HOME = os.path.realpath(os.path.expanduser("~/.agents"))
@@ -792,7 +803,11 @@ def access_entries():
             if isinstance(entry, str):
                 entry = {"path": entry, "access": "read"}
             if isinstance(entry, dict) and isinstance(entry.get("path"), str) and entry.get("access") in ACCESS_LEVELS:
-                entries.append({"path": entry["path"], "access": entry["access"]})
+                if entry["access"] == "run":
+                    if isinstance(entry.get("command"), str):
+                        entries.append({"path": entry["path"], "access": "run", "command": entry["command"]})
+                else:
+                    entries.append({"path": entry["path"], "access": entry["access"]})
         return entries
     return []
 
@@ -811,10 +826,36 @@ def access_list():
     return [dict(entry, exists=os.path.exists(entry["path"])) for entry in access_entries()]
 
 
-def access_add(path, access):
-    """Always lets models read (or read and change) this file or folder. Setting it again changes the level."""
+def run_prefix(command):
+    """The words of one simple command, or raises. The first word can't be a shell, an interpreter or anything that deletes."""
+    if not command or len(command) > 200 or RUN_UNSAFE.search(command) or re.search(r"[;|&]", command):
+        raise RuntimeError("use one simple command: no pipes, ;, &&, redirects, $ or backticks")
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        raise RuntimeError("the quotes in that command don't match")
+    if not words:
+        raise RuntimeError("give a command")
+    if os.path.basename(words[0]) in RUN_DENIED or "/" in words[0]:
+        raise RuntimeError(f"{words[0]} can't be allowed for good: it can run anything, or delete or move files. Use a plain program name like git or npm")
+    if words[0] in RUN_NEEDS_SUBCOMMAND and len(words) < 2:
+        raise RuntimeError(f"name what {words[0]} may do, like {words[0]} status: {words[0]} alone covers everything it can do")
+    return words
+
+
+def access_add(path, access, command=""):
+    """Always lets models read, or read and change, a file or folder; or run a command in a project folder. Again changes the level."""
     if access not in ACCESS_LEVELS:
-        raise RuntimeError("the level is read or write")
+        raise RuntimeError("the level is read, write or run")
+    if access == "run":
+        folder = check_folder(path)
+        if folder == AGENTS_HOME:
+            raise RuntimeError("pick a project first: commands are allowed per project folder, not in ~/.agents")
+        words = run_prefix(command.strip())
+        text = " ".join(words)
+        entries = [entry for entry in access_entries() if not (entry["access"] == "run" and entry["path"] == folder and entry["command"] == text)]
+        save_access(entries + [{"path": folder, "access": "run", "command": text}])
+        return access_list()
     written = os.path.expanduser(path.strip())
     if not os.path.isabs(written):
         raise RuntimeError(f"use a full path, not {path}")
@@ -829,19 +870,21 @@ def access_add(path, access):
         raise RuntimeError(f"{path} holds private files, so models can't be given it")
     if access == "write" and (real == AGENTS_HOME or AGENTS_HOME.startswith(real + os.sep)):
         raise RuntimeError("models can't change ~/.agents: it holds this list, your memory and your skills")
-    entries = [entry for entry in access_entries() if entry["path"] != real]
+    entries = [entry for entry in access_entries() if not (entry["access"] in PATH_LEVELS and entry["path"] == real)]
     save_access(entries + [{"path": real, "access": access}])
     return access_list()
 
 
 def access_remove(which):
-    """WHICH is a path, or its number in the list."""
+    """WHICH is its number in the list, or a path (which removes that path's read or write entry)."""
     entries = access_entries()
     if which.isdigit() and 1 <= int(which) <= len(entries):
-        which = entries[int(which) - 1]["path"]
-    if which not in [entry["path"] for entry in entries]:
-        raise RuntimeError("that path is not in the list")
-    save_access([entry for entry in entries if entry["path"] != which])
+        entries = entries[:int(which) - 1] + entries[int(which):]
+    elif any(entry["path"] == which and entry["access"] in PATH_LEVELS for entry in entries):
+        entries = [entry for entry in entries if not (entry["path"] == which and entry["access"] in PATH_LEVELS)]
+    else:
+        raise RuntimeError("that is not in the list")
+    save_access(entries)
     return access_list()
 
 
@@ -857,6 +900,32 @@ def access_covers(path, levels):
     return False
 
 
+def shell_granted(resources, tool_input):
+    """Every simple command in the request starts with a command the user allowed in this project folder, and nothing
+    else rides along: no substitution, redirect or backgrounding, and it runs inside the project."""
+    if not resources or not isinstance(tool_input, dict) or not isinstance(tool_input.get("command"), str):
+        return False
+    if RUN_UNSAFE.search(tool_input["command"]):
+        return False
+    workdir = tool_input.get("workdir") or tool_input.get("cwd")
+    root = os.path.realpath(FOLDER)
+    if workdir and not (os.path.realpath(os.path.join(FOLDER, str(workdir))) + os.sep).startswith(root + os.sep):
+        return False
+    grants = []
+    for entry in access_entries():
+        folder = os.path.realpath(entry["path"])
+        if entry["access"] == "run" and (root == folder or root.startswith(folder + os.sep)):
+            grants.append(entry["command"].split())
+    for resource in resources:
+        try:
+            words = shlex.split(resource)
+        except ValueError:
+            return False
+        if not any(words[:len(prefix)] == prefix for prefix in grants if words):
+            return False
+    return True
+
+
 def access_granted(request, tool_name, tool_input):
     """A read or edit the user already allowed for good: skip the question."""
     if not access_entries():
@@ -864,13 +933,15 @@ def access_granted(request, tool_name, tool_input):
     action = request.get("action")
     resources = request.get("resources") or []
     path = tool_input.get("path") or tool_input.get("filePath") if isinstance(tool_input, dict) else None
+    if action == "shell":
+        return shell_granted(resources, tool_input)
     if action == "read":
-        return bool(resources) and all(access_covers(resource, ACCESS_LEVELS) for resource in resources)
+        return bool(resources) and all(access_covers(resource, PATH_LEVELS) for resource in resources)
     if action in WRITE_TOOLS:
         return bool(resources) and all(access_covers(resource, ("write",)) for resource in resources)
     if action == "external_directory" and isinstance(path, str) and path:
         if tool_name in READ_TOOLS:
-            return access_covers(path, ACCESS_LEVELS)
+            return access_covers(path, PATH_LEVELS)
         if tool_name in WRITE_TOOLS:
             return access_covers(path, ("write",))
     return False
@@ -1366,7 +1437,7 @@ def main():
         return report(project_save, *args[1:])
     if args == ["access-list"]:
         return report(access_list)
-    if len(args) == 3 and args[0] == "access-add":
+    if len(args) in (3, 4) and args[0] == "access-add":
         return report(access_add, *args[1:])
     if len(args) == 2 and args[0] == "access-remove":
         return report(access_remove, args[1])

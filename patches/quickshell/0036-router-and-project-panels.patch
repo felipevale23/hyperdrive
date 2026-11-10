@@ -1,6 +1,6 @@
 --- a/modules/ii/sidebarLeft/AiChat.qml
 +++ b/modules/ii/sidebarLeft/AiChat.qml
-@@ -47,6 +47,26 @@
+@@ -47,6 +47,28 @@
          else Ai.addMessage(Translation.tr("This needs an OpenCode model. Pick one with /model"), Ai.interfaceRole);
      }
  
@@ -11,8 +11,9 @@
 +                Ai.addMessage(Translation.tr("No always-allowed paths. /allow read PATH lets models read a file or folder without asking. /allow write PATH lets them change it too."), Ai.interfaceRole);
 +                return;
 +            }
-+            const rows = entries.map((entry, i) => `| ${i + 1} | ${entry.access === "write" ? Translation.tr("read and change") : Translation.tr("read")} | ${entry.exists ? entry.path : Translation.tr("%1 (gone)").arg(entry.path)} |`);
-+            Ai.addMessage(`${Translation.tr("Always allowed, without asking. Change with /allow read PATH, /allow write PATH or /allow remove NUMBER. Private files stay blocked, and edits outside a project can't be undone.")}\n\n`
++            const level = access => access === "write" ? Translation.tr("read and change") : (access === "run" ? Translation.tr("run") : Translation.tr("read"));
++            const rows = entries.map((entry, i) => `| ${i + 1} | ${level(entry.access)} | ${entry.access === "run" ? Translation.tr("`%1` in %2").arg(entry.command).arg(entry.path) : (entry.exists ? entry.path : Translation.tr("%1 (gone)").arg(entry.path))} |`);
++            Ai.addMessage(`${Translation.tr("Always allowed, without asking. Change with /allow read PATH, /allow write PATH, /allow run COMMAND (in this project) or /allow remove NUMBER. Private files stay blocked, and edits outside a project can't be undone. A command allowed here covers any arguments you give it.")}\n\n`
 +                + `| # | ${Translation.tr("Access")} | ${Translation.tr("Path")} |\n|---|---|---|\n${rows.join("\n")}`, Ai.interfaceRole);
 +        };
 +        const fail = error => Ai.addMessage(error, Ai.interfaceRole);
@@ -20,20 +21,21 @@
 +        const rest = args.slice(1).join(" ").trim();
 +        if (action === "list" || args.length === 0) Ai.runAgentTool(["access-list"], show, fail);
 +        else if ((action === "read" || action === "write") && rest.length > 0) Ai.runAgentTool(["access-add", rest, action], show, fail);
++        else if (action === "run" && rest.length > 0) Ai.runAgentTool(["access-add", Ai.opencodeFolder, "run", rest], show, fail);
 +        else if (action === "remove" && rest.length > 0) Ai.runAgentTool(["access-remove", rest], show, fail);
-+        else Ai.addMessage(Translation.tr("Use %1allow to list, %1allow read PATH, %1allow write PATH or %1allow remove NUMBER").arg(root.commandPrefix), Ai.interfaceRole);
++        else Ai.addMessage(Translation.tr("Use %1allow to list, %1allow read PATH, %1allow write PATH, %1allow run COMMAND or %1allow remove NUMBER").arg(root.commandPrefix), Ai.interfaceRole);
 +    }
 +
      // "/command typed" for a command with a list of arguments, else null
      function argumentCommand(text) {
          const match = text.match(new RegExp(`^${root.commandPrefix}(\\w+) (\\S*)$`));
-@@ -143,11 +163,15 @@
+@@ -143,11 +165,15 @@
              }
          },
          {
 +            name: "allow",
 +            // No argument list: Enter would accept the first suggestion, and a plain /allow could not run
-+            description: Translation.tr("Paths models may always read or change: /allow lists them, /allow read PATH, /allow write PATH, /allow remove NUMBER"),
++            description: Translation.tr("Always allowed without asking: /allow lists them, /allow read PATH, /allow write PATH, /allow run COMMAND (in this project), /allow remove NUMBER"),
 +            execute: args => root.allowCommand(args)
 +        },
 +        {
@@ -47,7 +49,7 @@
              execute: args => root.opencodeOnly(() => {
                  if (args[0] === "budget") Ai.setOpencodeBudget(args[1]);
                  else Ai.showOpencodeUsage();
-@@ -375,54 +399,16 @@
+@@ -375,54 +401,16 @@
          messageListView.positionViewAtEnd();
      }
  
@@ -112,7 +114,7 @@
          }
      }
  
-@@ -690,7 +676,7 @@
+@@ -690,7 +678,7 @@
  
              PagePlaceholder {
                  z: 2
@@ -121,7 +123,7 @@
                  icon: "neurology"
                  iconComponent: PixelCortex {
                      pixel: 5
-@@ -713,6 +699,18 @@
+@@ -713,6 +701,18 @@
                  anchors.fill: parent
                  inputField: root.inputField
              }
@@ -140,7 +142,7 @@
          }
  
          DescriptionBox {
-@@ -1192,7 +1190,11 @@
+@@ -1192,7 +1192,11 @@
                      icon: "smart_toy"
                      text: Ai.opencodeAgent === "plan" ? Translation.tr("Plan") : Translation.tr("Build")
                      tooltipText: Translation.tr("Agents: switch, call, watch and create them")
@@ -153,7 +155,7 @@
                  }
  
                  ApiInputBoxIndicator {
-@@ -1201,11 +1203,11 @@
+@@ -1201,11 +1205,11 @@
                      icon: "folder"
                      readonly property string folderName: Ai.opencodeFolder.length > 0 ? Ai.opencodeFolder.split("/").pop() : ".agents"
                      text: folderName.length > 18 ? `${folderName.slice(0, 17)}…` : folderName
@@ -169,7 +171,7 @@
                      }
                  }
  
-@@ -1215,15 +1217,15 @@
+@@ -1215,15 +1219,15 @@
                      text: router.busy ? (router.action === "stop" ? Translation.tr("Stopping…") : Translation.tr("Starting…"))
                          : router.running ? Translation.tr("9router on") : Translation.tr("9router off")
                      tooltipText: router.error.length > 0
@@ -565,7 +567,7 @@
 +}
 --- /dev/null
 +++ b/modules/ii/sidebarLeft/aiChat/ProjectPanel.qml
-@@ -0,0 +1,413 @@
+@@ -0,0 +1,443 @@
 +import qs.modules.common
 +import qs.modules.common.widgets
 +import qs.services
@@ -639,9 +641,17 @@
 +        }, error => root.panelError = error);
 +    }
 +
++    function addCommand() {
++        root.panelError = "";
++        Ai.runAgentTool(["access-add", Ai.opencodeFolder, "run", commandField.text.trim()], grants => {
++            commandField.text = "";
++            root.grants = grants;
++        }, error => root.panelError = error);
++    }
++
 +    function removeGrant(path) {
 +        root.panelError = "";
-+        Ai.runAgentTool(["access-remove", path], grants => root.grants = grants, error => root.panelError = error);
++        Ai.runAgentTool(["access-remove", `${path}`], grants => root.grants = grants, error => root.panelError = error);
 +    }
 +
 +    function addFact() {
@@ -905,6 +915,7 @@
 +                    delegate: RowLayout {
 +                        id: grantRow
 +                        required property var modelData
++                        required property int index
 +                        Layout.fillWidth: true
 +                        spacing: 6
 +                        StyledText {
@@ -912,13 +923,34 @@
 +                            textFormat: Text.PlainText
 +                            wrapMode: Text.WrapAnywhere
 +                            color: grantRow.modelData.exists ? Appearance.colors.colOnLayer1 : Appearance.colors.colOnSurfaceVariant
-+                            text: `${grantRow.modelData.access === "write" ? Translation.tr("read and change") : Translation.tr("read")}: ${grantRow.modelData.exists ? grantRow.modelData.path : Translation.tr("%1 (gone)").arg(grantRow.modelData.path)}`
++                            text: grantRow.modelData.access === "run"
++                                ? Translation.tr("run: %1, in %2").arg(grantRow.modelData.command).arg(grantRow.modelData.path)
++                                : `${grantRow.modelData.access === "write" ? Translation.tr("read and change") : Translation.tr("read")}: ${grantRow.modelData.exists ? grantRow.modelData.path : Translation.tr("%1 (gone)").arg(grantRow.modelData.path)}`
 +                        }
 +                        PanelButton {
 +                            label: "✕"
 +                            tooltip: Translation.tr("Ask again before reading this")
-+                            onClicked: root.removeGrant(grantRow.modelData.path)
++                            onClicked: root.removeGrant(`${grantRow.index + 1}`)
 +                        }
++                    }
++                }
++                SectionTitle { text: Translation.tr("Commands the models may run here, without asking") }
++                Hint {
++                    text: Translation.tr("One simple command, like git status or npm test. It covers any arguments, in this project folder only. No pipes, redirects, $ or backticks, and never shells, interpreters, sudo or rm.")
++                }
++                RowLayout {
++                    Layout.fillWidth: true
++                    spacing: 6
++                    MaterialTextField {
++                        id: commandField
++                        Layout.fillWidth: true
++                        placeholderText: Translation.tr("A command, like git status")
++                        onAccepted: root.addCommand()
++                    }
++                    PanelButton {
++                        label: Translation.tr("Allow here")
++                        enabled: commandField.text.trim().length > 0
++                        onClicked: root.addCommand()
 +                    }
 +                }
 +                Hint {

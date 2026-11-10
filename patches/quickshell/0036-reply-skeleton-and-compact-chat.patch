@@ -790,3 +790,24 @@ index ee00ffd..6002fc1 100644
                  error => Ai.addMessage(error, Ai.interfaceRole))
          }
  
+--- a/modules/ii/sidebarLeft/aiChat/MessagePermissionBlock.qml
++++ b/modules/ii/sidebarLeft/aiChat/MessagePermissionBlock.qml
+@@ -184,6 +184,18 @@
+                 error => Ai.addMessage(error, Ai.interfaceRole))
+         }
+ 
++        AnswerButton { // One simple command, for good, in this project only. The helper refuses shells, sudo, rm and the like
++            visible: root.live && (root.block.grantCommand ?? "").length > 0
++            Layout.fillWidth: true
++            label: Translation.tr("Always allow this command here")
++            colLabel: Appearance.colors.colOnLayer2
++            colBackground: Appearance.colors.colLayer3
++            colBackgroundHover: Appearance.colors.colLayer3Hover
++            colRipple: Appearance.colors.colLayer3Active
++            onClicked: Ai.runAgentTool(["access-add", Ai.opencodeFolder, "run", root.block.grantCommand], () => Ai.approveCommand(root.messageData),
++                error => Ai.addMessage(error, Ai.interfaceRole))
++        }
++
+         AnswerButton { // Only lookups. What they send still leaves this computer
+             visible: root.live && (root.block.chatTool ?? "").length > 0
+             Layout.fillWidth: true
