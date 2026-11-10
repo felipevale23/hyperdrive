@@ -1065,11 +1065,13 @@ def run_turn(model, session, mode, agent, folder, text, regen=0, plain_ok=True):
         if not variant and level != "off":  # a quick answer keeps its skeleton
             emit({"type": "thinking", "level": "default", "reason": "this model has no thinking levels"})
 
-        note = CHAT_ONLY_NOTE if plain else (ADVISOR_NOTE if mode == "tools" and advising() else "")
+        follow_up = text == TOOLS_FOLLOW_UP  # The run after a tool-less try said NEEDS_TOOLS
+        note = CHAT_ONLY_NOTE if plain else ((ADVISOR_NOTE if mode == "tools" and advising() else "") + (RETRY_NOTE if follow_up else ""))
 
         if not session:  # A chat keeps what it started with, so only a new one needs it
             note = memory_note("off" if plain else mode) + note
-        held = []  # a tool-less reply waits here, in case it is only NEEDS_TOOLS
+        held = []  # a tool-less reply waits here, in case it is only NEEDS_TOOLS. So does the retry's, if the model says it again
+        hold = plain or follow_up
         if files or refused:
             emit({"type": "attached", "files": [item["name"] for item in files], "refused": refused})
 
@@ -1112,7 +1114,7 @@ def run_turn(model, session, mode, agent, folder, text, regen=0, plain_ok=True):
             elif data.get("sessionID") != sid and kind in ("session.text.delta", "session.reasoning.delta"):
                 continue  # a subagent's reply comes back to the model as a tool result
             elif kind == "session.text.delta":
-                if plain:
+                if hold:
                     held.append(data.get("delta", ""))
                 else:
                     emit({"type": "text", "delta": data.get("delta", "")})
@@ -1174,10 +1176,12 @@ def run_turn(model, session, mode, agent, folder, text, regen=0, plain_ok=True):
                 family.discard(sid)
                 interrupt_all()  # a background subagent must not outlive the turn
                 reply_text = "".join(held)
-                if plain and NEEDS_TOOLS in reply_text:
+                if hold and NEEDS_TOOLS in reply_text:
                     reply_text = reply_text.replace(NEEDS_TOOLS, "").strip(" \n\t`*_.")
-                    if kind.endswith("succeeded") and not reply_text:
+                    if plain and kind.endswith("succeeded") and not reply_text:
                         return (RETRY_WITH_TOOLS, sid)
+                    if not plain and not reply_text:  # Asked for tools twice, and used none
+                        reply_text = "The model asked for tools but did not use them. Send the message again, or pick another model."
                 if reply_text:
                     emit({"type": "text", "delta": reply_text})
                 turn_usage()  # before the end, which the tab treats as the last event
