@@ -725,3 +725,36 @@ index ee00ffd..6002fc1 100644
  
                  touchpadScrollFactor: Config.options.interactions.scrolling.touchpadScrollFactor * 1.4
                  mouseScrollFactor: Config.options.interactions.scrolling.mouseScrollFactor * 1.4
+--- a/modules/ii/sidebarLeft/aiChat/AiMessage.qml
++++ b/modules/ii/sidebarLeft/aiChat/AiMessage.qml
+@@ -34,7 +34,8 @@
+ 
+     anchors.left: parent?.left
+     anchors.right: parent?.right
+-    readonly property real toolbarRoom: isUser ? 22 : 0 // Your bubble leaves room above it for the actions box
++    readonly property bool toolbarBelow: isUser || messageData?.role === 'assistant'
++    readonly property real toolbarRoom: toolbarBelow ? 26 : 0 // Room under the message for the actions box, which shows on hover
+     implicitHeight: columnLayout.implicitHeight + root.messagePadding * 2 + toolbarRoom
+ 
+     color: "transparent"
+@@ -128,7 +129,7 @@
+         anchors.right: parent.right
+         anchors.top: parent.top
+         anchors.margins: messagePadding
+-        anchors.topMargin: messagePadding + root.toolbarRoom
++        anchors.topMargin: messagePadding
+         spacing: root.contentSpacing
+ 
+         Loader {
+@@ -403,8 +404,9 @@
+         // Your message: just above its bubble, right-aligned with it. A reply: over the top-right corner of the message.
+         readonly property real bubbleRight: columnLayout.x + messageContentColumnLayout.x + messageContentColumnLayout.width + root.bubblePaddingX
+         readonly property real bubbleTop: columnLayout.y + messageContentColumnLayout.y - root.bubblePaddingY
+-        x: root.width - root.messagePadding - width // Both kinds sit on the same right edge
+-        y: root.isUser ? bubbleTop - height - 2 : -4
++        // Under the message: your bubble's box on its right edge, a reply's under its text on the left. Notes from the tab keep it in the top-right corner.
++        x: root.isUser ? root.width - root.messagePadding - width : (root.toolbarBelow ? root.messagePadding + 10 : root.width - root.messagePadding - width)
++        y: root.toolbarBelow ? root.height - root.toolbarRoom + (root.toolbarRoom - height) / 2 : -4
+         z: 5
+         width: implicitWidth
+         height: implicitHeight
