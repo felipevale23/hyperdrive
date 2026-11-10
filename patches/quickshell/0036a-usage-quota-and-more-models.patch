@@ -91,12 +91,12 @@
          const extra = request.patch?.length > 0 ? cleanDiff(request.patch) : (request.detail ?? "");
          const listed = named || (request.action === "subagent" && extra.length > 0); // The detail already says which agent
 -        const body = [listed ? "" : resources.join("\n"), extra].filter(part => part.length > 0).join("\n");
-+        const access = outside ? qsTr("Approving gives access to: %1").arg(resources.join(", ")) : "";
-+        const body = [listed ? "" : (access.length > 0 ? access : resources.join("\n")), extra].filter(part => part.length > 0).join("\n");
 +        // What the tool itself asked for. A permission only names a pattern: "/etc/*" for a read of /etc/hostname
 +        const tool = request.tool ?? "";
 +        const target = request.target ?? "";
 +        const outside = request.action === "external_directory" && tool.length > 0 && target.length > 0;
++        const access = outside ? qsTr("Approving gives access to: %1").arg(resources.join(", ")) : "";
++        const body = [listed ? "" : (access.length > 0 ? access : resources.join("\n")), extra].filter(part => part.length > 0).join("\n");
 +        const what = outside ? qsTr("%1, outside the project").arg(describe(tool, target))
 +            : describe(request.action, target.length > 0 && ["edit", "write", "read", "grep", "glob"].includes(request.action) ? target : (named ? resources[0] : ""));
          return {
