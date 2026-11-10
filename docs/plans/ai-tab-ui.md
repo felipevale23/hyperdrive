@@ -106,7 +106,7 @@ Built with it, in the order applied:
 - `0034` thinking per prompt: no thinking for plain chat, some for reasoning questions, deep for "think hard" (EN and PT cues, `/think` to fix it), shown on the usage line; regenerate with another model (⇄ button, `/regen`) that replaces the turn in the OpenCode session; CPU, RAM and GPU only for local models.
 - `0035` quick answers show no waiting animation; the reply line says which model really answered a combo ("answered by …", from 9router's request history); the agents panel shows each role's thinking level ("Advisor · deep").
   With it in the helper: plain chat goes without tools and retries through a hidden follow-up when the model answers NEEDS_TOOLS (Kiro keeps its own copy of the chat, so rewriting history didn't work); Context7 and Exa moved to a `research` subagent; per-role thinking (advisor and hypervisor `#deep`, subagents `#off`); and `opencode.json` uses `agents`, which OpenCode 2 reads (the old `agent` section was ignored).
-- `0036` a quick answer shows a pulsing three-line skeleton instead of nothing; the chat is more compact: the hover actions float over the message's top-right corner instead of taking ~40 px under every message, and the gaps between messages and blocks are smaller.
+- `0036` a quick answer shows a Material UI-style three-bar skeleton with a sweeping light wave instead of the thinking animation; the chat is more compact: the hover actions float over the message's top-right corner instead of taking ~40 px under every message, and the gaps between messages and blocks are smaller.
 
 Not checked on screen: the `/model` hints, the reply usage line, the agents panel after the fix, and the chip tooltip.
 

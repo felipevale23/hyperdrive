@@ -517,3 +517,65 @@ index ee00ffd..6002fc1 100644
                      Layout.leftMargin: 3
                      text: "linked_services"
                  }
+--- a/modules/ii/sidebarLeft/aiChat/AiMessage.qml
++++ b/modules/ii/sidebarLeft/aiChat/AiMessage.qml
+@@ -184,8 +184,8 @@
+                 Layout.fillWidth: true
+                 Layout.leftMargin: 10
+                 Layout.rightMargin: 10
+-                implicitHeight: waiting ? 3 * 10 + 2 * 8 + 8 : 0 // Three 10px lines, 8px apart, plus a margin
+-                visible: skeletonLoader.visible
++                implicitHeight: waiting ? 3 * 12 + 2 * 10 + 8 : 0 // Three 12px lines, 10px apart, plus a margin
++                visible: waiting || skeletonLoader.opacity > 0 // Not skeletonLoader.visible: that is false while this item is hidden, so it could never turn on
+ 
+                 Behavior on implicitHeight {
+                     animation: Appearance.animation.elementMove.numberAnimation.createObject(this)
+@@ -200,23 +200,37 @@
+                             anchors.left: parent.left
+                             anchors.right: parent.right
+                             anchors.verticalCenter: parent.verticalCenter
+-                            spacing: 8
++                            spacing: 10
+                             Repeater {
+-                                model: [0.92, 0.76, 0.48]
+-                                delegate: Rectangle {
++                                model: [1, 1, 0.6]
++                                delegate: Rectangle { // Like Material UI's text skeleton: a soft bar with a light wave sweeping across
+                                     required property var modelData
+                                     Layout.preferredWidth: skeletonLines.width * modelData
+-                                    implicitHeight: 10
+-                                    radius: height / 2
+-                                    color: Appearance.colors.colSurfaceContainerHighest
++                                    implicitHeight: 12
++                                    radius: 4
++                                    color: Qt.alpha(Appearance.colors.colOnSurface, 0.11)
++                                    clip: true
++
++                                    Rectangle {
++                                        id: wave
++                                        width: parent.width
++                                        height: parent.height
++                                        // Starts one bar off to the left, ends off to the right, then rests half a second
++                                        gradient: Gradient {
++                                            orientation: Gradient.Horizontal
++                                            GradientStop { position: 0; color: "transparent" }
++                                            GradientStop { position: 0.5; color: Qt.alpha(Appearance.colors.colOnSurface, 0.08) }
++                                            GradientStop { position: 1; color: "transparent" }
++                                        }
++                                        SequentialAnimation on x {
++                                            loops: Animation.Infinite
++                                            NumberAnimation { from: -wave.width; to: wave.width; duration: 1600; easing.type: Easing.InOutSine }
++                                            PauseAnimation { duration: 500 }
++                                        }
++                                    }
+                                 }
+                             }
+                         }
+-                        SequentialAnimation on opacity { // A slow pulse, so it reads as loading, not as content
+-                            loops: Animation.Infinite
+-                            NumberAnimation { from: 1; to: 0.45; duration: 700; easing.type: Easing.InOutQuad }
+-                            NumberAnimation { from: 0.45; to: 1; duration: 700; easing.type: Easing.InOutQuad }
+-                        }
+                     }
+                 }
+             }
