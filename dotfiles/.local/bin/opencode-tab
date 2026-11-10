@@ -28,6 +28,7 @@ OPENCODE_TAB_REGEN=N makes send first drop the chat's last N turns, then send (r
   opencode-tab memory-add FACT             keep a fact for new chats, refusing anything like a secret
   opencode-tab memory-forget NUMBER        drop a fact by its number in the list
   opencode-tab usage SESSION               tokens a chat used, by agent and model, as JSON
+  opencode-tab compact SESSION             summarize the chat so far, to free its context, and wait for it
   opencode-tab exhausted                   models stopped for running out of quota, with when they come back, as JSON
   opencode-tab exhausted-clear [MODEL]     let one model (or all) be tried again now
 OPENCODE_TAB_DEBUG=1 prints OpenCode's raw events to stderr, without the text, for finding out why a turn behaves.
@@ -709,6 +710,22 @@ def usage(session):
 ROUTER_DB = os.path.expanduser("~/.9router/db/data.sqlite")
 
 
+def totals_of(tokens):
+    cache = (tokens or {}).get("cache") or {}
+    return {"input": (tokens or {}).get("input", 0) or 0, "output": (tokens or {}).get("output", 0) or 0,
+            "reasoning": (tokens or {}).get("reasoning", 0) or 0, "read": cache.get("read", 0) or 0, "write": cache.get("write", 0) or 0}
+
+
+def tokens_added(before, tokens):
+    """OpenCode's usage events carry the running totals of the whole chat, not one request's. This is what the event adds."""
+    now = totals_of(tokens)
+    added = {key: now[key] - (before or {}).get(key, 0) for key in now}
+    if any(value < 0 for value in added.values()):  # The totals started again, so this event is all new
+        added = now
+    return now, {"input": added["input"], "output": added["output"], "reasoning": added["reasoning"],
+                 "cache": {"read": added["read"], "write": added["write"]}}
+
+
 def utc_now():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
@@ -1100,6 +1117,7 @@ def run_turn(model, session, mode, agent, folder, text, regen=0, plain_ok=True):
     asked_files = {}
     family = set()  # this turn's session and every subagent session under it
     step_models = {}  # session -> the model its last step ran on, for a retry that names only the session
+    last_totals = {}  # session -> the running totals OpenCode last reported for it
     spent = {}  # tokens by session in this turn: agent, model, steps and token counts
     turn = {"prompt": 0, "warned": False, "limit": None, "started": utc_now()}
 
@@ -1168,6 +1186,10 @@ def run_turn(model, session, mode, agent, folder, text, regen=0, plain_ok=True):
         if session and regen > 0:
             drop_last_turns(api, sid, regen)
         family.add(sid)
+        try:  # What the chat had used before this turn, so the turn counts only its own requests
+            last_totals[sid] = totals_of(checked(api.call("GET", f"/api/session/{sid}"))["data"].get("tokens"))
+        except (OSError, RuntimeError, KeyError, http.client.HTTPException):
+            pass
         active.update(api=api, id=sid)
         emit({"type": "session", "id": sid})
         spent[sid] = blank(agent, model)
@@ -1234,7 +1256,7 @@ def run_turn(model, session, mode, agent, folder, text, regen=0, plain_ok=True):
                 spent.setdefault(data["sessionID"], blank("subagent", ""))["model"] = child_model
                 emit({"type": "agent", "id": data["sessionID"], "model": child_model})
             elif data.get("sessionID") != sid and kind == "session.usage.updated":
-                tokens = data.get("tokens") or {}
+                last_totals[data["sessionID"]], tokens = tokens_added(last_totals.get(data["sessionID"]), data.get("tokens"))
                 count(data["sessionID"], tokens)
                 emit({"type": "agent", "id": data["sessionID"], "tokens": tokens.get("input", 0) + tokens.get("output", 0)})
             elif data.get("sessionID") != sid and kind in TERMINAL:
@@ -1250,8 +1272,9 @@ def run_turn(model, session, mode, agent, folder, text, regen=0, plain_ok=True):
             elif kind == "session.reasoning.delta":
                 emit({"type": "reasoning", "delta": data.get("delta", "")})
             elif kind == "session.usage.updated":
-                count(sid, data.get("tokens") or {})
-                emit({"type": "usage", "tokens": data.get("tokens", {})})
+                last_totals[sid], tokens = tokens_added(last_totals.get(sid), data.get("tokens"))
+                count(sid, tokens)
+                emit({"type": "usage", "tokens": tokens})
             elif kind == "permission.asked":
                 owner = data.get("sessionID")
                 asking = tools.get((data.get("source") or {}).get("id"), {})
@@ -1497,6 +1520,25 @@ def diff(session):
             for entry in patches_of(finished_tools(all_messages(connect(), session)), journal_read(session))]
 
 
+def compact(session):
+    """Summarizes the chat so far, so the next reply starts from the summary and the latest turns. Waits for it to finish."""
+    if not SESSION_ID.fullmatch(session):
+        raise RuntimeError("that isn't a session")
+    api = connect()
+    use_session_folder(data_of(checked(api.call("GET", f"/api/session/{session}"))))
+    made = checked(api.call("POST", f"/api/session/{session}/compact", {}))["data"]["id"]
+    deadline = time.time() + 180
+    while time.time() < deadline:
+        time.sleep(2)
+        for item in all_messages(api, session):
+            if item.get("id") == made and item.get("status") in ("completed", "failed", "cancelled"):
+                if item["status"] != "completed":
+                    raise RuntimeError(f"the summary {item['status']}")
+                tokens = item.get("tokens") or {}
+                return {"summary": len(item.get("summary") or ""), "read": tokens.get("input", 0), "wrote": tokens.get("output", 0)}
+    raise RuntimeError("the summary did not finish in 3 minutes")
+
+
 def undo(session):
     """Reverses the last turn's edits, then drops the turn. On any failure, nothing changes."""
     api = connect()
@@ -1582,8 +1624,8 @@ def main():
         return reply(*args[1:])
     if args == ["sessions"]:
         return report(sessions)
-    if len(args) == 2 and args[0] in ("messages", "diff", "undo", "usage"):
-        return report({"messages": messages, "diff": diff, "undo": undo, "usage": usage}[args[0]], args[1])
+    if len(args) == 2 and args[0] in ("messages", "diff", "undo", "usage", "compact"):
+        return report({"messages": messages, "diff": diff, "undo": undo, "usage": usage, "compact": compact}[args[0]], args[1])
     if args == ["agents"]:
         return report(agents)
     if len(args) == 5 and args[0] == "agent-new":

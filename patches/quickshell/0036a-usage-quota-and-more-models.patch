@@ -88,7 +88,26 @@
          }, onFailed);
      }
  
-@@ -1438,3 +1498,4 @@
+@@ -957,6 +1017,18 @@
+         });
+     }
+ 
++    // /compact: the helper summarizes the chat, so the next reply starts from the summary and the latest turns
++    function compactOpencode() {
++        const session = opencodeSessionOrAdvice();
++        if (session.length === 0) return;
++        root.addMessage(Translation.tr("Summarizing this chat to free its context…"), root.interfaceRole);
++        runOpencode(["compact", session], result => {
++            root.opencodeContext = null; // The next reply measures the new size
++            root.addMessage(Translation.tr("Done. A summary of %1 characters now stands in for the earlier turns (it read %2 tokens and wrote %3). The next reply shows the new context size.")
++                .arg(result.summary).arg(root.shortTokens(result.read)).arg(root.shortTokens(result.wrote)), root.interfaceRole);
++        });
++    }
++
+     function showOpencodeDiff() {
+         const session = opencodeSessionOrAdvice();
+         if (session.length === 0) return;
+@@ -1438,3 +1510,4 @@
          }
      }
  }

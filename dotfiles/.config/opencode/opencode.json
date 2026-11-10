@@ -75,6 +75,10 @@
             "deep": {
               "reasoningEffort": "high"
             }
+          },
+          "limit": {
+            "context": 200000,
+            "output": 32000
           }
         },
         "kr/claude-haiku-4.5": {
@@ -89,6 +93,10 @@
             "deep": {
               "reasoningEffort": "high"
             }
+          },
+          "limit": {
+            "context": 200000,
+            "output": 32000
           }
         },
         "kr/deepseek-3.2": {
@@ -103,6 +111,10 @@
             "deep": {
               "reasoningEffort": "high"
             }
+          },
+          "limit": {
+            "context": 128000,
+            "output": 16000
           }
         },
         "kr/glm-5": {
@@ -117,6 +129,10 @@
             "deep": {
               "reasoningEffort": "high"
             }
+          },
+          "limit": {
+            "context": 128000,
+            "output": 32000
           }
         },
         "kr/qwen3-coder-next": {
@@ -131,6 +147,10 @@
             "deep": {
               "reasoningEffort": "high"
             }
+          },
+          "limit": {
+            "context": 128000,
+            "output": 32000
           }
         },
         "kr/minimax-m2.5": {
@@ -145,6 +165,10 @@
             "deep": {
               "reasoningEffort": "high"
             }
+          },
+          "limit": {
+            "context": 128000,
+            "output": 32000
           }
         },
         "gemini/gemini-3.6-flash": {
@@ -238,43 +262,95 @@
           }
         },
         "nvidia/minimaxai/minimax-m2.7": {
-          "name": "MiniMax M2.7 (NVIDIA)"
+          "name": "MiniMax M2.7 (NVIDIA)",
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          }
         },
         "nvidia/minimaxai/minimax-m3": {
-          "name": "MiniMax M3 (NVIDIA)"
+          "name": "MiniMax M3 (NVIDIA)",
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          }
         },
         "nvidia/z-ai/glm-5.2": {
-          "name": "GLM 5.2 (NVIDIA)"
+          "name": "GLM 5.2 (NVIDIA)",
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          }
         },
         "nvidia/deepseek-ai/deepseek-v4-pro": {
-          "name": "DeepSeek V4 Pro (NVIDIA)"
+          "name": "DeepSeek V4 Pro (NVIDIA)",
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          }
         },
         "nvidia/deepseek-ai/deepseek-v4-flash": {
-          "name": "DeepSeek V4 Flash (NVIDIA)"
+          "name": "DeepSeek V4 Flash (NVIDIA)",
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          }
         },
         "nvidia/moonshotai/kimi-k2.6": {
-          "name": "Kimi K2.6 (NVIDIA)"
+          "name": "Kimi K2.6 (NVIDIA)",
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          }
         },
         "ag/gemini-4-argon-high": {
-          "name": "Gemini 4 Argon High (Antigravity)"
+          "name": "Gemini 4 Argon High (Antigravity)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
         },
         "ag/gemini-3.8-flash": {
-          "name": "Gemini 3.8 Flash (Antigravity)"
+          "name": "Gemini 3.8 Flash (Antigravity)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
         },
         "ag/gemini-pro-agent": {
-          "name": "Gemini 3.1 Pro (Antigravity)"
+          "name": "Gemini 3.1 Pro (Antigravity)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
         },
         "ag/claude-sonnet-5-5": {
-          "name": "Claude Sonnet 5.5 (Antigravity)"
+          "name": "Claude Sonnet 5.5 (Antigravity)",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          }
         },
         "ag/claude-opus-5-5": {
-          "name": "Claude Opus 5.5 (Antigravity)"
+          "name": "Claude Opus 5.5 (Antigravity)",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          }
         },
         "ag/claude-sonnet-4-6": {
-          "name": "Claude Sonnet 4.6 (Antigravity)"
+          "name": "Claude Sonnet 4.6 (Antigravity)",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          }
         },
         "ag/gpt-oss-120b-medium": {
-          "name": "GPT-OSS 120B (Antigravity)"
+          "name": "GPT-OSS 120B (Antigravity)",
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          }
         }
       }
     },
@@ -377,5 +453,10 @@
     "explore": {
       "model": "9router/chat-chain#off"
     }
+  },
+  "compaction": {
+    "auto": true,
+    "prune": true,
+    "reserved": 20000
   }
 }
