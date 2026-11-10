@@ -19,7 +19,10 @@
   opencode-tab team                        print the advisor and subagent models as JSON
   opencode-tab team-set ROLE VALUE         ROLE advisor or subagents takes a model, advising takes on or off,
                                            budget takes the tokens a turn may use before a warning, 0 for none,
-                                           hypervisor takes a model like advisor
+                                           hypervisor takes a model like advisor,
+                                           thinking takes auto, off, think or deep
+
+OPENCODE_TAB_REGEN=N makes send first drop the chat's last N turns, then send (regenerate an answer).
   opencode-tab memory                      list the facts every new chat starts with as JSON
   opencode-tab memory-add FACT             keep a fact for new chats, refusing anything like a secret
   opencode-tab memory-forget NUMBER        drop a fact by its number in the list
@@ -171,6 +174,36 @@ def agent_new(name, description, model, prompt):
     return {"name": name}
 
 
+# Thinking for the main chat, as OpenCode model variants that set reasoning_effort (see opencode.json).
+# "auto" reads the prompt: plain chat gets none, questions that need reasoning get some, and an explicit
+# request to think hard, or a big design question, gets the most. English and Portuguese cues.
+THINKING_MODES = ("auto", "off", "think", "deep")
+DEEP_CUES = re.compile(r"\b(think (hard|harder|deeply|carefully|it through)|ultrathink|deep(ly)? (think|thought|dive|analysis)|"
+                       r"architecture|arquitetura|trade-?offs?|prove|proof|demonstr\w*|pense (bem|muito|profundamente|com calma)|"
+                       r"an[aá]lise profunda|racioc[ií]nio profundo)\b", re.I)
+THINK_CUES = re.compile(r"\b(think|pense|reason|why|por ?qu[eê]|explain|expli\w+|compare|compar\w+|plan|planej\w*|design|"
+                        r"debug|depur\w*|bug|error|erro|fix|corrig\w*|calculat\w*|calcul\w*|step by step|passo a passo|"
+                        r"analy[sz]\w*|analis\w*|optimi[sz]\w*|otimiz\w*|refactor\w*|refator\w*|review|revis\w*|"
+                        r"how (do|does|can|should|would)|como (fa[çz]o|funciona|posso|devo|seria))\b", re.I)
+
+
+def thinking_mode():
+    value = team_settings().get("thinking", "auto")
+    return value if value in THINKING_MODES else "auto"
+
+
+def choose_thinking(text, mode):
+    """The variant for this message and why, from the setting or the prompt."""
+    if mode != "auto":
+        return mode, "set with /think"
+    words = len(text.split())
+    if DEEP_CUES.search(text) or words > 400:
+        return "deep", "asked to think hard" if DEEP_CUES.search(text) else "a long request"
+    if THINK_CUES.search(text) or "```" in text or words > 120:
+        return "think", "a question that needs reasoning" if THINK_CUES.search(text) else "code or a longer request"
+    return "off", "plain chat"
+
+
 DEFAULT_BUDGET = 300000  # tokens a turn may process before the tab warns, cache reads included
 
 
@@ -209,7 +242,7 @@ def models_in(config):
 def team():
     config = read_config()
     files = agent_files()
-    return {"advising": advising(), "budget": budget(), "advisor": files.get("advisor", {}).get("model", ""),
+    return {"advising": advising(), "budget": budget(), "thinking": thinking_mode(), "advisor": files.get("advisor", {}).get("model", ""),
             "hypervisor": files.get("hypervisor", {}).get("model", ""),
             "subagents": config.get("agent", {}).get("general", {}).get("model", ""), "models": models_in(config)}
 
@@ -272,9 +305,13 @@ def set_agent_model(name, model):
 
 
 def team_set(role, value):
-    if role in ("advising", "budget"):
+    if role in ("advising", "budget", "thinking"):
         settings = team_settings()
-        if role == "advising":
+        if role == "thinking":
+            if value not in THINKING_MODES:
+                raise RuntimeError("use auto, off, think or deep")
+            settings["thinking"] = value
+        elif role == "advising":
             if value not in ("on", "off"):
                 raise RuntimeError("use on or off")
             settings["advisor"] = value == "on"
@@ -495,10 +532,10 @@ def data_of(reply):
     return reply.get("data", reply) if isinstance(reply, dict) else {}
 
 
-def prepare_session(api, session, model, rules, title, agent, folder=""):
-    """Returns a session id with exactly these rules, on the wanted model, or raises."""
+def prepare_session(api, session, model, rules, title, agent, folder="", variant=None):
+    """Returns a session id with exactly these rules, on the wanted model and variant, or raises."""
     provider, _, model_id = model.partition("/")
-    wanted = {"id": model_id, "providerID": provider}
+    wanted = {"id": model_id, "providerID": provider, **({"variant": variant} if variant else {})}
     info = None
     if session:
         status, reply = api.call("GET", f"/api/session/{session}")
@@ -526,7 +563,7 @@ def prepare_session(api, session, model, rules, title, agent, folder=""):
         if status != 204:
             raise RuntimeError(f"could not switch agent ({status})")
     current = info.get("model") or {}
-    if (current.get("id"), current.get("providerID")) != (model_id, provider):
+    if (current.get("id"), current.get("providerID"), current.get("variant")) != (model_id, provider, variant):
         status, _ = api.call("POST", f"/api/session/{info['id']}/model", {"model": wanted})
         if status != 204:
             raise RuntimeError(f"could not switch model ({status})")
@@ -611,18 +648,34 @@ def usage(session):
             "context": context, "budget": budget()}
 
 
-def model_limit(api, model):
-    """The model's context size from OpenCode's list, or None."""
+def model_info(api, model):
+    """The model's entry in OpenCode's list (limit, variants), or {}."""
     provider, _, name = model.partition("/")
     try:
         status, reply = api.call("GET", "/api/model", timeout=10)
         listed = reply.get("data", reply) if isinstance(reply, dict) else reply
         for item in listed if status == 200 else []:
             if item.get("providerID") == provider and item.get("modelID") == name:
-                return (item.get("limit") or {}).get("context")
+                return item
     except (OSError, ValueError, AttributeError, http.client.HTTPException):
         pass
-    return None
+    return {}
+
+
+def model_limit(api, model):
+    """The model's context size from OpenCode's list, or None."""
+    return (model_info(api, model).get("limit") or {}).get("context")
+
+
+def drop_last_turns(api, session, count):
+    """Removes the newest COUNT user messages and what followed them from the session's history. Files stay as they are."""
+    items = all_messages(api, session)
+    users = [i for i, item in enumerate(items) if item.get("type") == "user"]
+    if count < 1 or not users:
+        return
+    first = users[-min(count, len(users))]
+    checked(api.call("POST", f"/api/session/{session}/revert/stage", {"messageID": items[first]["id"], "files": False}))
+    checked(api.call("POST", f"/api/session/{session}/revert/commit"))
 
 
 def journal_add(session, tool, entries):
@@ -747,12 +800,21 @@ def run_turn(model, session, mode, agent, folder, text):
     signal.signal(signal.SIGTERM, stop)
     try:
         api = connect()
-        sid = prepare_session(api, session, model, rules_for(mode, agent), " ".join(text.split())[:60] or "AI tab", agent, folder)
+        level, why = choose_thinking(text, thinking_mode())
+        info = model_info(api, model)
+        variant = level if level in {item.get("id") for item in info.get("variants") or []} else None
+        sid = prepare_session(api, session, model, rules_for(mode, agent), " ".join(text.split())[:60] or "AI tab", agent, folder,
+                              variant)
+        regen = os.environ.get("OPENCODE_TAB_REGEN", "")
+        if session and regen.isdigit() and int(regen) > 0:
+            drop_last_turns(api, sid, int(regen))
         family.add(sid)
         active.update(api=api, id=sid)
         emit({"type": "session", "id": sid})
         spent[sid] = blank(agent, model)
-        turn["limit"] = model_limit(api, model)
+        turn["limit"] = (info.get("limit") or {}).get("context")
+        emit({"type": "thinking", "level": level if variant else "default", "reason": why if variant else
+              "this model has no thinking levels"})
 
         note = ADVISOR_NOTE if mode == "tools" and advising() else ""
         if not session:  # A chat keeps what it started with, so only a new one needs it

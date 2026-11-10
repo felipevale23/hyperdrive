@@ -11,22 +11,38 @@
       "models": {
         "nvidia/mistralai/mistral-large-4-1t-a52b": {
           "name": "Mistral Large 4 (9router)",
-          "options": {
-            "reasoningEffort": "low"
-          },
           "limit": {
             "context": 200000,
             "output": 32000
+          },
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
           }
         },
         "nvidia/minimaxai/minimax-m3.1-flash": {
           "name": "MiniMax M3.1 Flash (9router)",
-          "options": {
-            "reasoningEffort": "low"
-          },
           "limit": {
             "context": 262144,
             "output": 262144
+          },
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
           }
         },
         "nvidia/nvidia/nemotron-3-ultra-550b-a55b": {
@@ -34,31 +50,119 @@
           "limit": {
             "context": 1000000,
             "output": 65536
+          },
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
           }
         },
         "kr/claude-sonnet-4.5": {
-          "name": "Claude Sonnet 4.5 (Kiro)"
+          "name": "Claude Sonnet 4.5 (Kiro)",
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
+          }
         },
         "kr/claude-haiku-4.5": {
-          "name": "Claude Haiku 4.5 (Kiro)"
+          "name": "Claude Haiku 4.5 (Kiro)",
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
+          }
         },
         "kr/deepseek-3.2": {
-          "name": "DeepSeek 3.2 (Kiro)"
+          "name": "DeepSeek 3.2 (Kiro)",
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
+          }
         },
         "kr/glm-5": {
-          "name": "GLM-5 (Kiro)"
+          "name": "GLM-5 (Kiro)",
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
+          }
         },
         "kr/qwen3-coder-next": {
-          "name": "Qwen3 Coder Next (Kiro)"
+          "name": "Qwen3 Coder Next (Kiro)",
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
+          }
         },
         "kr/minimax-m2.5": {
-          "name": "MiniMax M2.5 (Kiro)"
+          "name": "MiniMax M2.5 (Kiro)",
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
+          }
         },
         "gemini/gemini-3.6-flash": {
           "name": "Gemini 3.6 Flash (9router)",
           "limit": {
             "context": 1048576,
             "output": 65536
+          },
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
           }
         },
         "gemini/gemini-3.5-flash-lite": {
@@ -66,6 +170,17 @@
           "limit": {
             "context": 1048576,
             "output": 65536
+          },
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
           }
         },
         "chat-chain": {
@@ -73,6 +188,17 @@
           "limit": {
             "context": 200000,
             "output": 32000
+          },
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
           }
         },
         "advisor-chain": {
@@ -80,6 +206,17 @@
           "limit": {
             "context": 200000,
             "output": 32000
+          },
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
           }
         },
         "hypervisor": {
@@ -87,6 +224,17 @@
           "limit": {
             "context": 200000,
             "output": 32000
+          },
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
           }
         }
       }
