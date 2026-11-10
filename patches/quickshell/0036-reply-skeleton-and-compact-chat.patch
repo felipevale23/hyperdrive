@@ -1,0 +1,519 @@
+diff --git a/modules/ii/sidebarLeft/AiChat.qml b/modules/ii/sidebarLeft/AiChat.qml
+index fe5840b..23b3b95 100644
+--- a/modules/ii/sidebarLeft/AiChat.qml
++++ b/modules/ii/sidebarLeft/AiChat.qml
+@@ -651,7 +651,7 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+                 // On OpenCode models the status pill gets its own row, so it can't cover messages on scroll.
+                 // Other models keep it floating over the list.
+                 anchors.topMargin: Ai.opencodeModel ? root.statusHeight : 0
+-                spacing: 4
++                spacing: 2 // Compact: messages sit close, their own padding separates them
+                 popin: false
+                 topMargin: Ai.opencodeModel ? 0 : root.statusHeight
+ 
+diff --git a/modules/ii/sidebarLeft/aiChat/AiMessage.qml b/modules/ii/sidebarLeft/aiChat/AiMessage.qml
+index c0e1e8e..acab68f 100644
+--- a/modules/ii/sidebarLeft/aiChat/AiMessage.qml
++++ b/modules/ii/sidebarLeft/aiChat/AiMessage.qml
+@@ -18,7 +18,7 @@ Rectangle {
+     readonly property bool isUser: messageData?.role === 'user'
+     readonly property bool isInterface: messageData?.role === 'interface'
+     readonly property real bubblePaddingX: 14
+-    readonly property real bubblePaddingY: 9
++    readonly property real bubblePaddingY: 7
+     // TextArea's own padding and document margins, which the text can't use
+     readonly property real textAreaPadding: 44
+     // Your messages are bubbles sized to their text, up to most of the width
+@@ -177,6 +177,49 @@ Rectangle {
+                     }
+                 }
+             }
++            Item { // A quick answer's skeleton: soft lines where the reply will be, instead of the thinking animation
++                id: replySkeleton
++                readonly property bool waiting: (root.messageBlocks.length < 1) && !(root.messageData?.done ?? true)
++                    && root.messageData?.thinkingLevel === "off"
++                Layout.fillWidth: true
++                Layout.leftMargin: 10
++                Layout.rightMargin: 10
++                implicitHeight: waiting ? 3 * 10 + 2 * 8 + 8 : 0 // Three 10px lines, 8px apart, plus a margin
++                visible: skeletonLoader.visible
++
++                Behavior on implicitHeight {
++                    animation: Appearance.animation.elementMove.numberAnimation.createObject(this)
++                }
++                FadeLoader {
++                    id: skeletonLoader
++                    anchors.fill: parent
++                    shown: replySkeleton.waiting
++                    sourceComponent: Item {
++                        ColumnLayout {
++                            id: skeletonLines
++                            anchors.left: parent.left
++                            anchors.right: parent.right
++                            anchors.verticalCenter: parent.verticalCenter
++                            spacing: 8
++                            Repeater {
++                                model: [0.92, 0.76, 0.48]
++                                delegate: Rectangle {
++                                    required property var modelData
++                                    Layout.preferredWidth: skeletonLines.width * modelData
++                                    implicitHeight: 10
++                                    radius: height / 2
++                                    color: Appearance.colors.colSurfaceContainerHighest
++                                }
++                            }
++                        }
++                        SequentialAnimation on opacity { // A slow pulse, so it reads as loading, not as content
++                            loops: Animation.Infinite
++                            NumberAnimation { from: 1; to: 0.45; duration: 700; easing.type: Easing.InOutQuad }
++                            NumberAnimation { from: 0.45; to: 1; duration: 700; easing.type: Easing.InOutQuad }
++                        }
++                    }
++                }
++            }
+             Repeater {
+                 model: ScriptModel {
+                     values: root.messageBlocks
+@@ -337,198 +380,206 @@ Rectangle {
+             }
+         }
+ 
+-        Rectangle { // Message actions, shown on hover
+-            Layout.fillWidth: true
+-            Layout.topMargin: root.isUser ? root.bubblePaddingY - 4 : 0
+-            implicitWidth: headerRowLayout.implicitWidth + 4 * 2
+-            implicitHeight: headerRowLayout.implicitHeight + 4 * 2
+-            color: "transparent"
+-            opacity: (messageHover.hovered || root.editing) ? 1 : 0
+-            Behavior on opacity {
+-                animation: Appearance.animation.elementMoveFast.numberAnimation.createObject(this)
++
++    }
++
++    Rectangle { // Message actions: a small toolbar floating over the top-right corner on hover, taking no space
++        anchors.top: parent.top
++        anchors.right: parent.right
++        anchors.topMargin: 2
++        anchors.rightMargin: 2
++        z: 5
++        width: implicitWidth
++        height: implicitHeight
++        visible: opacity > 0
++        radius: Appearance.rounding.full
++        implicitWidth: headerRowLayout.implicitWidth + 4 * 2
++        implicitHeight: headerRowLayout.implicitHeight + 4 * 2
++        color: Appearance.colors.colLayer2 // Solid, so it can sit over the text
++        opacity: (messageHover.hovered || root.editing) ? 1 : 0
++        Behavior on opacity {
++            animation: Appearance.animation.elementMoveFast.numberAnimation.createObject(this)
++        }
++    
++        RowLayout { // Header
++            id: headerRowLayout
++            anchors {
++                fill: parent
++                margins: 4
+             }
+-        
+-            RowLayout { // Header
+-                id: headerRowLayout
+-                anchors {
+-                    fill: parent
+-                    margins: 4
+-                }
+-                spacing: 18
+-
+-                Item { // Name
+-                    id: nameWrapper
+-                    implicitHeight: Math.max(nameRowLayout.implicitHeight + 5 * 2, 30)
+-                    Layout.fillWidth: true
+-                    Layout.alignment: Qt.AlignVCenter
+-
+-                    RowLayout {
+-                        id: nameRowLayout
+-                        visible: !root.isUser
+-                        anchors.verticalCenter: parent.verticalCenter
+-                        anchors.left: parent.left
+-                        anchors.right: parent.right
+-                        anchors.leftMargin: 10
+-                        anchors.rightMargin: 10
+-                        spacing: 12
+-
+-                        Item {
+-                            Layout.alignment: Qt.AlignVCenter
+-                            Layout.fillHeight: true
+-                            implicitWidth: messageData?.role == 'assistant' ? cortexIcon.implicitWidth : roleIcon.implicitWidth
+-                            implicitHeight: messageData?.role == 'assistant' ? cortexIcon.implicitHeight : roleIcon.implicitHeight
+-
+-                            PixelCortex {
+-                                id: cortexIcon
+-                                anchors.centerIn: parent
+-                                visible: messageData?.role == 'assistant'
+-                                color: Appearance.colors.colOnSurfaceVariant
+-                                thinking: !(messageData?.done ?? true)
+-                            }
++            spacing: 18
+ 
+-                            MaterialSymbol {
+-                                id: roleIcon
+-                                anchors.centerIn: parent
+-                                visible: !cortexIcon.visible
+-                                iconSize: Appearance.font.pixelSize.larger
+-                                color: Appearance.colors.colOnSurfaceVariant
+-                                text: messageData?.role == 'user' ? 'person' : 
+-                                    messageData?.role == 'interface' ? 'settings' : 
+-                                    'computer'
+-                            }
++            Item { // Name
++                id: nameWrapper
++                visible: false // The usage line names the model; the toolbar stays small
++                implicitHeight: Math.max(nameRowLayout.implicitHeight + 5 * 2, 30)
++                Layout.fillWidth: true
++                Layout.alignment: Qt.AlignVCenter
++
++                RowLayout {
++                    id: nameRowLayout
++                    visible: !root.isUser
++                    anchors.verticalCenter: parent.verticalCenter
++                    anchors.left: parent.left
++                    anchors.right: parent.right
++                    anchors.leftMargin: 10
++                    anchors.rightMargin: 10
++                    spacing: 12
++
++                    Item {
++                        Layout.alignment: Qt.AlignVCenter
++                        Layout.fillHeight: true
++                        implicitWidth: messageData?.role == 'assistant' ? cortexIcon.implicitWidth : roleIcon.implicitWidth
++                        implicitHeight: messageData?.role == 'assistant' ? cortexIcon.implicitHeight : roleIcon.implicitHeight
++
++                        PixelCortex {
++                            id: cortexIcon
++                            anchors.centerIn: parent
++                            visible: messageData?.role == 'assistant'
++                            color: Appearance.colors.colOnSurfaceVariant
++                            thinking: !(messageData?.done ?? true)
+                         }
+ 
+-                        StyledText {
+-                            id: providerName
+-                            Layout.alignment: Qt.AlignVCenter
+-                            Layout.fillWidth: true
+-                            elide: Text.ElideRight
+-                            font.pixelSize: Appearance.font.pixelSize.smaller
++                        MaterialSymbol {
++                            id: roleIcon
++                            anchors.centerIn: parent
++                            visible: !cortexIcon.visible
++                            iconSize: Appearance.font.pixelSize.larger
+                             color: Appearance.colors.colOnSurfaceVariant
+-                            text: messageData?.role == 'assistant' ? Ai.models[messageData?.model].name :
+-                                (messageData?.role == 'user' && SystemInfo.username) ? SystemInfo.username :
+-                                Translation.tr("Interface")
++                            text: messageData?.role == 'user' ? 'person' : 
++                                messageData?.role == 'interface' ? 'settings' : 
++                                'computer'
+                         }
+                     }
++
++                    StyledText {
++                        id: providerName
++                        Layout.alignment: Qt.AlignVCenter
++                        Layout.fillWidth: true
++                        elide: Text.ElideRight
++                        font.pixelSize: Appearance.font.pixelSize.smaller
++                        color: Appearance.colors.colOnSurfaceVariant
++                        text: messageData?.role == 'assistant' ? Ai.models[messageData?.model].name :
++                            (messageData?.role == 'user' && SystemInfo.username) ? SystemInfo.username :
++                            Translation.tr("Interface")
++                    }
+                 }
++            }
+ 
+-                Button { // Not visible to model
+-                    id: modelVisibilityIndicator
+-                    visible: messageData?.role == 'interface'
+-                    implicitWidth: 16
+-                    implicitHeight: 30
+-                    Layout.alignment: Qt.AlignVCenter
++            Button { // Not visible to model
++                id: modelVisibilityIndicator
++                visible: messageData?.role == 'interface'
++                implicitWidth: 16
++                implicitHeight: 30
++                Layout.alignment: Qt.AlignVCenter
+ 
+-                    background: Item
++                background: Item
+ 
+-                    MaterialSymbol {
+-                        id: notVisibleToModelText
+-                        anchors.centerIn: parent
+-                        iconSize: Appearance.font.pixelSize.small
+-                        color: Appearance.colors.colOnSurfaceVariant
+-                        text: "visibility_off"
+-                    }
+-                    StyledToolTip {
+-                        text: Translation.tr("Not visible to model")
+-                    }
++                MaterialSymbol {
++                    id: notVisibleToModelText
++                    anchors.centerIn: parent
++                    iconSize: Appearance.font.pixelSize.small
++                    color: Appearance.colors.colOnSurfaceVariant
++                    text: "visibility_off"
++                }
++                StyledToolTip {
++                    text: Translation.tr("Not visible to model")
+                 }
++            }
+ 
+-                ButtonGroup {
+-                    spacing: 5
++            ButtonGroup {
++                spacing: 5
+ 
+-                    AiMessageControlButton {
+-                        id: regenButton
+-                        buttonIcon: "refresh"
+-                        visible: messageData?.role === 'assistant'
++                AiMessageControlButton {
++                    id: regenButton
++                    buttonIcon: "refresh"
++                    visible: messageData?.role === 'assistant'
+ 
+-                        onClicked: {
+-                            Ai.regenerate(root.messageIndex)
+-                        }
+-                        
+-                        StyledToolTip {
+-                            text: Translation.tr("Regenerate")
+-                        }
++                    onClicked: {
++                        Ai.regenerate(root.messageIndex)
++                    }
++                    
++                    StyledToolTip {
++                        text: Translation.tr("Regenerate")
++                    }
++                }
++                AiMessageControlButton {
++                    id: regenWithButton
++                    buttonIcon: "swap_horiz"
++                    visible: messageData?.role === 'assistant' && !!root.messageInputField
++
++                    onClicked: {
++                        Ai.regenerateTarget = root.messageIndex;
++                        root.messageInputField.text = "/regen ";
++                        root.messageInputField.cursorPosition = root.messageInputField.text.length;
++                        root.messageInputField.forceActiveFocus();
+                     }
+-                    AiMessageControlButton {
+-                        id: regenWithButton
+-                        buttonIcon: "swap_horiz"
+-                        visible: messageData?.role === 'assistant' && !!root.messageInputField
+-
+-                        onClicked: {
+-                            Ai.regenerateTarget = root.messageIndex;
+-                            root.messageInputField.text = "/regen ";
+-                            root.messageInputField.cursorPosition = root.messageInputField.text.length;
+-                            root.messageInputField.forceActiveFocus();
+-                        }
+ 
+-                        StyledToolTip {
+-                            text: Translation.tr("Regenerate with another model")
+-                        }
++                    StyledToolTip {
++                        text: Translation.tr("Regenerate with another model")
+                     }
++                }
+ 
+-                    AiMessageControlButton {
+-                        id: copyButton
+-                        buttonIcon: activated ? "inventory" : "content_copy"
++                AiMessageControlButton {
++                    id: copyButton
++                    buttonIcon: activated ? "inventory" : "content_copy"
+ 
+-                        onClicked: {
+-                            Quickshell.clipboardText = StringUtils.withoutSystemBlocks(root.messageData?.content, root.messageData?.systemFence)
+-                            copyButton.activated = true
+-                            copyIconTimer.restart()
+-                        }
++                    onClicked: {
++                        Quickshell.clipboardText = StringUtils.withoutSystemBlocks(root.messageData?.content, root.messageData?.systemFence)
++                        copyButton.activated = true
++                        copyIconTimer.restart()
++                    }
+ 
+-                        Timer {
+-                            id: copyIconTimer
+-                            interval: 1500
+-                            repeat: false
+-                            onTriggered: {
+-                                copyButton.activated = false
+-                            }
+-                        }
+-                        
+-                        StyledToolTip {
+-                            text: Translation.tr("Copy")
++                    Timer {
++                        id: copyIconTimer
++                        interval: 1500
++                        repeat: false
++                        onTriggered: {
++                            copyButton.activated = false
+                         }
+                     }
+-                    AiMessageControlButton {
+-                        id: editButton
+-                        activated: root.editing
+-                        enabled: (root.messageData?.done ?? false) && !root.messageData?.systemFence
+-                        buttonIcon: "edit"
+-                        onClicked: {
+-                            root.editing = !root.editing
+-                            if (!root.editing) { // Save changes
+-                                root.saveMessage()
+-                            }
+-                        }
+-                        StyledToolTip {
+-                            text: root.editing ? Translation.tr("Save") : Translation.tr("Edit")
+-                        }
++                    
++                    StyledToolTip {
++                        text: Translation.tr("Copy")
+                     }
+-                    AiMessageControlButton {
+-                        id: toggleMarkdownButton
+-                        activated: !root.renderMarkdown
+-                        buttonIcon: "code"
+-                        onClicked: {
+-                            root.renderMarkdown = !root.renderMarkdown
+-                        }
+-                        StyledToolTip {
+-                            text: Translation.tr("View Markdown source")
++                }
++                AiMessageControlButton {
++                    id: editButton
++                    activated: root.editing
++                    enabled: (root.messageData?.done ?? false) && !root.messageData?.systemFence
++                    buttonIcon: "edit"
++                    onClicked: {
++                        root.editing = !root.editing
++                        if (!root.editing) { // Save changes
++                            root.saveMessage()
+                         }
+                     }
+-                    AiMessageControlButton {
+-                        id: deleteButton
+-                        buttonIcon: "close"
+-                        onClicked: {
+-                            Ai.removeMessage(root.messageIndex)
+-                        }
+-                        StyledToolTip {
+-                            text: Translation.tr("Delete")
+-                        }
++                    StyledToolTip {
++                        text: root.editing ? Translation.tr("Save") : Translation.tr("Edit")
++                    }
++                }
++                AiMessageControlButton {
++                    id: toggleMarkdownButton
++                    activated: !root.renderMarkdown
++                    buttonIcon: "code"
++                    onClicked: {
++                        root.renderMarkdown = !root.renderMarkdown
++                    }
++                    StyledToolTip {
++                        text: Translation.tr("View Markdown source")
++                    }
++                }
++                AiMessageControlButton {
++                    id: deleteButton
++                    buttonIcon: "close"
++                    onClicked: {
++                        Ai.removeMessage(root.messageIndex)
++                    }
++                    StyledToolTip {
++                        text: Translation.tr("Delete")
+                     }
+                 }
+             }
+         }
+-
+     }
+ }
+-
+diff --git a/modules/ii/sidebarLeft/aiChat/MessageActivityBlock.qml b/modules/ii/sidebarLeft/aiChat/MessageActivityBlock.qml
+index f9edfaf..4541a84 100644
+--- a/modules/ii/sidebarLeft/aiChat/MessageActivityBlock.qml
++++ b/modules/ii/sidebarLeft/aiChat/MessageActivityBlock.qml
+@@ -89,7 +89,7 @@ ColumnLayout {
+         Layout.leftMargin: 10
+         Layout.rightMargin: 10
+         Layout.topMargin: 2
+-        Layout.bottomMargin: 4
++        Layout.bottomMargin: 2
+         spacing: 4
+ 
+         Repeater {
+diff --git a/modules/ii/sidebarLeft/aiChat/MessageCodeBlock.qml b/modules/ii/sidebarLeft/aiChat/MessageCodeBlock.qml
+index f304058..f095858 100644
+--- a/modules/ii/sidebarLeft/aiChat/MessageCodeBlock.qml
++++ b/modules/ii/sidebarLeft/aiChat/MessageCodeBlock.qml
+@@ -84,8 +84,8 @@ ColumnLayout {
+                 id: codeBlockLanguage
+                 Layout.alignment: Qt.AlignLeft
+                 Layout.fillWidth: false
+-                Layout.topMargin: 7
+-                Layout.bottomMargin: 7
++                Layout.topMargin: 5
++                Layout.bottomMargin: 5
+                 Layout.leftMargin: 10
+                 font.pixelSize: Appearance.font.pixelSize.small
+                 font.weight: Font.DemiBold
+diff --git a/modules/ii/sidebarLeft/aiChat/MessageNoteBlock.qml b/modules/ii/sidebarLeft/aiChat/MessageNoteBlock.qml
+index 7c89f87..b66c720 100644
+--- a/modules/ii/sidebarLeft/aiChat/MessageNoteBlock.qml
++++ b/modules/ii/sidebarLeft/aiChat/MessageNoteBlock.qml
+@@ -11,8 +11,8 @@ RowLayout {
+     property var block: ({})
+ 
+     Layout.fillWidth: true
+-    Layout.topMargin: 4
+-    Layout.bottomMargin: 4
++    Layout.topMargin: 2
++    Layout.bottomMargin: 2
+     Layout.leftMargin: 10
+     Layout.rightMargin: 10
+     spacing: 8
+diff --git a/modules/ii/sidebarLeft/aiChat/MessagePermissionBlock.qml b/modules/ii/sidebarLeft/aiChat/MessagePermissionBlock.qml
+index 483be16..2a6aa7a 100644
+--- a/modules/ii/sidebarLeft/aiChat/MessagePermissionBlock.qml
++++ b/modules/ii/sidebarLeft/aiChat/MessagePermissionBlock.qml
+@@ -49,8 +49,8 @@ Rectangle {
+     }
+ 
+     Layout.fillWidth: true
+-    Layout.topMargin: 4
+-    Layout.bottomMargin: 4
++    Layout.topMargin: 2
++    Layout.bottomMargin: 2
+     implicitHeight: cardColumn.implicitHeight + 12 * 2
+     radius: Appearance.rounding.normal
+     color: root.live ? Appearance.colors.colSurfaceContainerHighest : Appearance.colors.colLayer2
+diff --git a/modules/ii/sidebarLeft/aiChat/MessageThinkBlock.qml b/modules/ii/sidebarLeft/aiChat/MessageThinkBlock.qml
+index ee00ffd..6002fc1 100644
+--- a/modules/ii/sidebarLeft/aiChat/MessageThinkBlock.qml
++++ b/modules/ii/sidebarLeft/aiChat/MessageThinkBlock.qml
+@@ -82,8 +82,8 @@ Item {
+ 
+                 MaterialSymbol {
+                     Layout.fillWidth: false
+-                    Layout.topMargin: 7
+-                    Layout.bottomMargin: 7
++                    Layout.topMargin: 5
++                    Layout.bottomMargin: 5
+                     Layout.leftMargin: 3
+                     text: "linked_services"
+                 }
