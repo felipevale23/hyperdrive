@@ -18,6 +18,7 @@
   opencode-tab busy                        exit 0 while any turn is running, from the tab or not
   opencode-tab team                        print the advisor and subagent models as JSON
   opencode-tab team-set ROLE VALUE         ROLE advisor or subagents takes a model, advising takes on or off,
+                                           search takes exa, 9router or both (the research agent's web search),
                                            budget takes the tokens a turn may use before a warning, 0 for none,
                                            hypervisor takes a model like advisor,
                                            thinking takes auto, off, think or deep
@@ -27,6 +28,9 @@ OPENCODE_TAB_REGEN=N makes send first drop the chat's last N turns, then send (r
   opencode-tab memory-add FACT             keep a fact for new chats, refusing anything like a secret
   opencode-tab memory-forget NUMBER        drop a fact by its number in the list
   opencode-tab usage SESSION               tokens a chat used, by agent and model, as JSON
+  opencode-tab exhausted                   models stopped for running out of quota, with when they come back, as JSON
+  opencode-tab exhausted-clear [MODEL]     let one model (or all) be tried again now
+OPENCODE_TAB_DEBUG=1 prints OpenCode's raw events to stderr, without the text, for finding out why a turn behaves.
 
 MODEL is provider/model. SESSION may be empty, which starts a new session. MODE is
 tools, where everything but project reads waits for an answer, or off. AGENT is build
@@ -1001,6 +1005,80 @@ def target_of(tool_input):
     return ""
 
 
+EXHAUSTED = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "opencode-tab", "exhausted.json")
+QUOTA_WORDS = re.compile(r"\b429\b|quota|rate.?limit|too many requests|resource.?exhausted|exceeded", re.I)
+COMBOS = re.compile(r"chain|hypervisor")  # A 9router combo falls back by itself, so it is never marked out of quota
+MAX_WAIT = 86400  # seconds a model is kept out, however long the provider asks
+
+
+def exhausted_models():
+    """{model: {"until": epoch seconds, "why": text}} for the models still out of quota."""
+    try:
+        with open(EXHAUSTED, encoding="utf-8") as file:
+            found = json.load(file)
+    except (OSError, ValueError):
+        return {}
+    now = time.time()
+    return {model: entry for model, entry in found.items()
+            if isinstance(entry, dict) and isinstance(entry.get("until"), (int, float)) and entry["until"] > now}
+
+
+def save_exhausted(models):
+    os.makedirs(os.path.dirname(EXHAUSTED), mode=0o700, exist_ok=True)
+    temporary = f"{EXHAUSTED}.{os.getpid()}"
+    with open(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as file:
+        json.dump(models, file)
+    os.replace(temporary, EXHAUSTED)
+
+
+def mark_exhausted(model, seconds, why):
+    if not model or COMBOS.search(model):
+        return
+    models = exhausted_models()
+    models[model] = {"until": time.time() + min(seconds, MAX_WAIT), "why": why[:160]}
+    save_exhausted(models)
+
+
+def exhausted_clear(model=""):
+    models = exhausted_models()
+    if model:
+        models.pop(model, None)
+    else:
+        models = {}
+    save_exhausted(models)
+    return exhausted_list()
+
+
+def exhausted_list():
+    return [{"model": model, "until": entry["until"], "why": entry.get("why", "")} for model, entry in sorted(exhausted_models().items())]
+
+
+def clock(epoch):
+    return datetime.datetime.fromtimestamp(epoch).strftime("%H:%M")
+
+
+def wait_message(model, until):
+    name = model.split("/", 1)[-1]
+    return f"{name} is out of free requests until {clock(until)}. Pick another model with /model, or /regen with one."
+
+
+def retry_verdict(error, attempt):
+    """What a scheduled retry means: (stop?, quota?, seconds to keep the model out). Quota errors with a long wait stop at
+    once; the same error with no long wait gets one more try; a model that can't be reached gets three."""
+    message = str((error or {}).get("message") or "")
+    quota = bool(QUOTA_WORDS.search(message))
+    delay = re.search(r"retryDelay\W{0,6}(\d+(?:\.\d+)?)\s*s", message)
+    if delay:
+        seconds = float(delay.group(1))
+    elif re.search(r"per.?day|daily", message, re.I):
+        seconds = MAX_WAIT
+    else:
+        seconds = 300 if quota else 0
+    if quota:
+        return (seconds >= 600 and attempt >= 2) or attempt >= 3, True, seconds
+    return attempt >= 4, False, 0
+
+
 def send(model, session, mode, agent, folder, text):
     die_with_parent()
     marker = turn_marker()
@@ -1021,6 +1099,7 @@ def run_turn(model, session, mode, agent, folder, text, regen=0, plain_ok=True):
     tools = {}
     asked_files = {}
     family = set()  # this turn's session and every subagent session under it
+    step_models = {}  # session -> the model its last step ran on, for a retry that names only the session
     spent = {}  # tokens by session in this turn: agent, model, steps and token counts
     turn = {"prompt": 0, "warned": False, "limit": None, "started": utc_now()}
 
@@ -1074,6 +1153,10 @@ def run_turn(model, session, mode, agent, folder, text, regen=0, plain_ok=True):
         if not plain_ok and level == "off":
             why = "plain chat, but it needed tools"
         emit({"type": "thinking", "level": level, "reason": why})  # at once, so a quick answer shows no waiting animation
+        out = exhausted_models().get(model)
+        if out:  # Out of quota a moment ago: don't ask again
+            emit({"type": "failed", "error": wait_message(model, out["until"])})
+            return 1
         api = connect()
         info = model_info(api, model)
         variant = level if level in {item.get("id") for item in info.get("variants") or []} else None
@@ -1111,6 +1194,25 @@ def run_turn(model, session, mode, agent, folder, text, regen=0, plain_ok=True):
 
         for event in api.events():
             kind, data = event.get("type"), event.get("data") or {}
+            if os.environ.get("OPENCODE_TAB_DEBUG") and kind not in ("session.text.delta", "session.reasoning.delta"):
+                print(f"DEBUG {kind} {json.dumps(data)[:400]}", file=sys.stderr, flush=True)
+            if kind == "session.step.started":
+                used = data.get("model") or {}
+                step_models[data.get("sessionID")] = f"{used.get('providerID', '')}/{used.get('id', '')}"
+            elif kind == "session.retry.scheduled" and data.get("sessionID") in family:
+                attempt = data.get("attempt") or 0
+                stop, quota, seconds = retry_verdict(data.get("error"), attempt)
+                if stop:
+                    failing = step_models.get(data.get("sessionID")) or model
+                    if quota:
+                        mark_exhausted(failing, seconds, str((data.get("error") or {}).get("message") or ""))
+                    for timer in timers.values():
+                        timer.cancel()
+                    interrupt_all()
+                    reason = str((data.get("error") or {}).get("message") or "no reason given").replace("\n", " ")[:160]
+                    emit({"type": "failed", "error": wait_message(failing, time.time() + min(seconds, MAX_WAIT)) if quota and seconds >= 600
+                          else f"{failing.split('/', 1)[-1]} keeps failing: {reason}. Stopped after {attempt - 1} tries. Try again later, or pick another model with /model."})
+                    return 1
             if kind == "server.connected":  # listening now, so nothing can be missed
                 status, _ = api.call("POST", f"/api/session/{sid}/prompt", {"text": text + note, "files": files, "agents": subagents})
                 if status != 200:
@@ -1466,6 +1568,10 @@ def main():
         return report({"project-info": project_info, "project-new": project_new}[args[0]], args[1])
     if len(args) == 3 and args[0] == "project-save":
         return report(project_save, *args[1:])
+    if args == ["exhausted"]:
+        return report(exhausted_list)
+    if len(args) in (1, 2) and args[0] == "exhausted-clear":
+        return report(exhausted_clear, *args[1:])
     if args == ["access-list"]:
         return report(access_list)
     if len(args) in (3, 4) and args[0] == "access-add":
