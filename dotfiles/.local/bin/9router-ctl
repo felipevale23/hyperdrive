@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Starts, stops and reports the local 9router (decolua/9router, built in ~/dev/ext/9router).
 #   9router-ctl start | stop | status    prints {"running":…,"pid":…,"url":…} as JSON
+#   9router-ctl quota                    the quota tracker: each account's limits and resets, as JSON
 #   9router-ctl usage                    today's requests and tokens by provider, and which token savers are on
 # It listens on 127.0.0.1 only and runs until stopped or logout; nothing starts it on boot.
 set -uo pipefail
@@ -75,10 +76,66 @@ usage() {
     }'
 }
 
+# The quota tracker, as the dashboard shows it: each connected account's limits and when they reset.
+# Reads the dashboard's own API with 9router's local CLI token, built here and never printed.
+quota() {
+    [[ -n "$(pid_of)" ]] || { echo '{"error":"9router is not running"}'; return 1; }
+    python3 -I - "$URL" <<'PY'
+import hashlib, json, os, sys, urllib.request
+
+url = sys.argv[1]
+data_dir = os.path.expanduser("~/.9router")
+
+def read(path):
+    with open(os.path.join(data_dir, path)) as handle:
+        return handle.read().strip()
+
+try:
+    token = hashlib.sha256((read("machine-id") + "9r-cli-auth" + read("auth/cli-secret")).encode()).hexdigest()[:16]
+except OSError as error:
+    print(json.dumps({"error": f"no 9router CLI token: {error.strerror}"})); sys.exit(1)
+
+def get(path):
+    request = urllib.request.Request(url + path, headers={"x-9r-cli-token": token})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return json.load(response)
+
+try:
+    listing = get("/api/providers")
+except Exception as error:
+    print(json.dumps({"error": f"providers: {error}"})); sys.exit(1)
+connections = listing.get("connections", listing) if isinstance(listing, dict) else listing
+
+rows = []
+for conn in connections:
+    if not isinstance(conn, dict) or conn.get("isActive") is False:
+        continue
+    row = {"provider": conn.get("provider"), "name": conn.get("name") or conn.get("email") or conn.get("id"), "quotas": []}
+    try:
+        usage = get(f"/api/usage/{conn['id']}")
+    except Exception as error:
+        row["error"] = str(error)[:120]
+        rows.append(row); continue
+    if usage.get("message"):
+        row["message"] = usage["message"]
+    for key, item in (usage.get("quotas") or {}).items():
+        if not isinstance(item, dict):
+            continue
+        row["quotas"].append({
+            "name": item.get("displayName") or key,
+            "used": item.get("used"), "total": item.get("total"),
+            "remaining": item.get("remainingPercentage"), "resetAt": item.get("resetAt"),
+        })
+    rows.append(row)
+print(json.dumps({"connections": rows}))
+PY
+}
+
 case "${1:-status}" in
     start) start ;;
     stop) stop ;;
     status) status ;;
     usage) usage ;;
-    *) echo "usage: 9router-ctl start|stop|status|usage" >&2; exit 2 ;;
+    quota) quota ;;
+    *) echo "usage: 9router-ctl start|stop|status|usage|quota" >&2; exit 2 ;;
 esac

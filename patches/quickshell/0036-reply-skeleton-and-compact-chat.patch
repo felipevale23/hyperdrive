@@ -579,3 +579,149 @@ index ee00ffd..6002fc1 100644
                      }
                  }
              }
+--- a/modules/ii/sidebarLeft/aiChat/AiMessageControlButton.qml
++++ b/modules/ii/sidebarLeft/aiChat/AiMessageControlButton.qml
+@@ -7,6 +7,8 @@
+     id: button
+     property string buttonIcon
+     property bool activated: false
++    property bool compact: false // Small, for the toolbar that hangs over a message
++    baseHeight: compact ? 24 : contentItem.implicitHeight + verticalPadding * 2
+     toggled: activated
+     baseWidth: height
+     colBackgroundHover: Appearance.colors.colSecondaryContainerHover
+@@ -14,7 +16,7 @@
+ 
+     contentItem: MaterialSymbol {
+         horizontalAlignment: Text.AlignHCenter
+-        iconSize: Appearance.font.pixelSize.larger
++        iconSize: button.compact ? Appearance.font.pixelSize.normal : Appearance.font.pixelSize.larger
+         text: buttonIcon
+         color: button.activated ? Appearance.m3colors.m3onPrimary :
+             button.enabled ? Appearance.m3colors.m3onSurface :
+--- a/modules/ii/sidebarLeft/aiChat/AiMessage.qml
++++ b/modules/ii/sidebarLeft/aiChat/AiMessage.qml
+@@ -34,7 +34,8 @@
+ 
+     anchors.left: parent?.left
+     anchors.right: parent?.right
+-    implicitHeight: columnLayout.implicitHeight + root.messagePadding * 2
++    readonly property real toolbarRoom: isUser ? 22 : 0 // Your bubble leaves room above it for the actions box
++    implicitHeight: columnLayout.implicitHeight + root.messagePadding * 2 + toolbarRoom
+ 
+     color: "transparent"
+ 
+@@ -127,6 +128,7 @@
+         anchors.right: parent.right
+         anchors.top: parent.top
+         anchors.margins: messagePadding
++        anchors.topMargin: messagePadding + root.toolbarRoom
+         spacing: root.contentSpacing
+ 
+         Loader {
+@@ -397,20 +399,22 @@
+ 
+     }
+ 
+-    Rectangle { // Message actions: a small toolbar floating over the top-right corner on hover, taking no space
+-        anchors.top: parent.top
+-        anchors.right: parent.right
+-        anchors.topMargin: 2
+-        anchors.rightMargin: 2
++    Rectangle { // Message actions: a small toolbar hanging over the message's top edge on hover, so it covers little text and takes no space
++        // Your message: just above its bubble, right-aligned with it. A reply: over the top-right corner of the message.
++        readonly property real bubbleRight: columnLayout.x + messageContentColumnLayout.x + messageContentColumnLayout.width + root.bubblePaddingX
++        readonly property real bubbleTop: columnLayout.y + messageContentColumnLayout.y - root.bubblePaddingY
++        x: root.width - root.messagePadding - width // Both kinds sit on the same right edge
++        y: root.isUser ? bubbleTop - height - 2 : -4
+         z: 5
+         width: implicitWidth
+         height: implicitHeight
+         visible: opacity > 0
+         radius: Appearance.rounding.full
+-        implicitWidth: headerRowLayout.implicitWidth + 4 * 2
+-        implicitHeight: headerRowLayout.implicitHeight + 4 * 2
++        implicitWidth: headerRowLayout.implicitWidth + 2 * 2
++        implicitHeight: headerRowLayout.implicitHeight + 2 * 2
+         color: Appearance.colors.colLayer2 // Solid, so it can sit over the text
+-        opacity: (messageHover.hovered || root.editing) ? 1 : 0
++        opacity: (messageHover.hovered || toolbarHover.hovered || root.editing) ? 1 : 0 // The toolbar sticks out of the message, so it needs its own hover
++        HoverHandler { id: toolbarHover }
+         Behavior on opacity {
+             animation: Appearance.animation.elementMoveFast.numberAnimation.createObject(this)
+         }
+@@ -419,9 +423,9 @@
+             id: headerRowLayout
+             anchors {
+                 fill: parent
+-                margins: 4
++                margins: 2
+             }
+-            spacing: 18
++            spacing: 0
+ 
+             Item { // Name
+                 id: nameWrapper
+@@ -502,9 +506,10 @@
+             }
+ 
+             ButtonGroup {
+-                spacing: 5
++                spacing: 2
+ 
+                 AiMessageControlButton {
++                    compact: true
+                     id: regenButton
+                     buttonIcon: "refresh"
+                     visible: messageData?.role === 'assistant'
+@@ -518,6 +523,7 @@
+                     }
+                 }
+                 AiMessageControlButton {
++                    compact: true
+                     id: regenWithButton
+                     buttonIcon: "swap_horiz"
+                     visible: messageData?.role === 'assistant' && !!root.messageInputField
+@@ -535,6 +541,7 @@
+                 }
+ 
+                 AiMessageControlButton {
++                    compact: true
+                     id: copyButton
+                     buttonIcon: activated ? "inventory" : "content_copy"
+ 
+@@ -558,6 +565,7 @@
+                     }
+                 }
+                 AiMessageControlButton {
++                    compact: true
+                     id: editButton
+                     activated: root.editing
+                     enabled: (root.messageData?.done ?? false) && !root.messageData?.systemFence
+@@ -573,6 +581,7 @@
+                     }
+                 }
+                 AiMessageControlButton {
++                    compact: true
+                     id: toggleMarkdownButton
+                     activated: !root.renderMarkdown
+                     buttonIcon: "code"
+@@ -584,6 +593,7 @@
+                     }
+                 }
+                 AiMessageControlButton {
++                    compact: true
+                     id: deleteButton
+                     buttonIcon: "close"
+                     onClicked: {
+--- a/modules/ii/sidebarLeft/AiChat.qml
++++ b/modules/ii/sidebarLeft/AiChat.qml
+@@ -653,7 +653,7 @@
+                 anchors.topMargin: Ai.opencodeModel ? root.statusHeight : 0
+                 spacing: 2 // Compact: messages sit close, their own padding separates them
+                 popin: false
+-                topMargin: Ai.opencodeModel ? 0 : root.statusHeight
++                topMargin: Ai.opencodeModel ? 12 : root.statusHeight // The first message's toolbar hangs over its top edge
+ 
+                 touchpadScrollFactor: Config.options.interactions.scrolling.touchpadScrollFactor * 1.4
+                 mouseScrollFactor: Config.options.interactions.scrolling.mouseScrollFactor * 1.4

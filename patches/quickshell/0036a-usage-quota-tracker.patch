@@ -1,0 +1,59 @@
+--- a/services/Ai.qml
++++ b/services/Ai.qml
+@@ -673,8 +673,55 @@
+         return root.apiStrategies.opencode.shortTokens(Math.round(count));
+     }
+ 
+-    // /usage: this chat's tokens by agent and model, context fill, the budget, and 9router today
++    // The 9router quota tracker: each account's limits and when they reset, from 9router-ctl quota
++    function showQuotaTracker() {
++        if (!quotaProc.running) quotaProc.running = true;
++    }
++    Process {
++        id: quotaProc
++        command: [`${Quickshell.env("HOME")}/.local/bin/9router-ctl`, "quota"]
++        stdout: StdioCollector {
++            id: quotaOut
++            onStreamFinished: {
++                let reply = null;
++                try { reply = JSON.parse(quotaOut.text); } catch (e) {}
++                if (!reply || reply.error) {
++                    root.addMessage(Translation.tr("Quota tracker: %1").arg(reply?.error ?? Translation.tr("9router gave no answer")), root.interfaceRole);
++                    return;
++                }
++                root.addMessage(root.quotaTable(reply.connections ?? []), root.interfaceRole);
++            }
++        }
++    }
++    function quotaReset(iso) {
++        if (!iso) return "–";
++        const minutes = Math.round((new Date(iso).getTime() - Date.now()) / 60000);
++        if (isNaN(minutes)) return "–";
++        if (minutes <= 0) return Translation.tr("now");
++        if (minutes < 120) return Translation.tr("in %1 min").arg(minutes);
++        if (minutes < 48 * 60) return Translation.tr("in %1 h").arg(Math.round(minutes / 60));
++        return Translation.tr("in %1 days").arg(Math.round(minutes / 1440));
++    }
++    function quotaTable(connections) {
++        const number = value => Number.isInteger(value) ? `${value}` : `${Math.round(value * 100) / 100}`;
++        const rows = [];
++        for (const conn of connections) {
++            const account = `${conn.provider} · ${conn.name}`;
++            if (conn.quotas.length === 0) {
++                rows.push(`| ${account} | ${conn.error ?? conn.message ?? "–"} | | | |`);
++                continue;
++            }
++            for (const quota of conn.quotas) {
++                const left = quota.remaining ?? (quota.total > 0 ? 100 * (1 - quota.used / quota.total) : null);
++                rows.push(`| ${account} | ${quota.name} | ${quota.total > 0 ? `${number(quota.used ?? 0)} / ${number(quota.total)}` : "–"} | ${left === null ? "–" : `${Math.round(left)}%`} | ${root.quotaReset(quota.resetAt)} |`);
++            }
++        }
++        return `${Translation.tr("Quota tracker (9router)")}\n\n| ${Translation.tr("Account")} | ${Translation.tr("Limit")} | ${Translation.tr("Used")} | ${Translation.tr("Left")} | ${Translation.tr("Resets")} |\n|---|---|---|---|---|\n${rows.join("\n")}`;
++    }
++
++    // /usage: the quota tracker, then this chat's tokens by agent and model, context fill, the budget, and 9router today
+     function showOpencodeUsage() {
++        root.showQuotaTracker();
+         const session = opencodeSessionOrAdvice();
+         if (session.length === 0) return;
+         root.refreshRouterUsage();
