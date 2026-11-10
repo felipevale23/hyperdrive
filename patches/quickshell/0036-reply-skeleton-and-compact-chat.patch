@@ -811,3 +811,23 @@ index ee00ffd..6002fc1 100644
          AnswerButton { // Only lookups. What they send still leaves this computer
              visible: root.live && (root.block.chatTool ?? "").length > 0
              Layout.fillWidth: true
+--- a/modules/ii/sidebarLeft/aiChat/AiMessage.qml
++++ b/modules/ii/sidebarLeft/aiChat/AiMessage.qml
+@@ -187,7 +187,7 @@
+                 Layout.fillWidth: true
+                 Layout.leftMargin: 10
+                 Layout.rightMargin: 10
+-                implicitHeight: waiting ? 3 * 12 + 2 * 10 + 8 : 0 // Three 12px lines, 10px apart, plus a margin
++                implicitHeight: waiting ? 2 * 12 + 1 * 10 + 8 : 0 // Two 12px lines, 10px apart, plus a margin
+                 visible: waiting || skeletonLoader.opacity > 0 // Not skeletonLoader.visible: that is false while this item is hidden, so it could never turn on
+ 
+                 Behavior on implicitHeight {
+@@ -205,7 +205,7 @@
+                             anchors.verticalCenter: parent.verticalCenter
+                             spacing: 10
+                             Repeater {
+-                                model: [1, 1, 0.6]
++                                model: [1, 0.6]
+                                 delegate: Rectangle { // Like Material UI's text skeleton: a soft bar with a light wave sweeping across
+                                     required property var modelData
+                                     Layout.preferredWidth: skeletonLines.width * modelData
