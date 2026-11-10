@@ -1,0 +1,26 @@
+diff --git a/GlobalStates.qml b/GlobalStates.qml
+index f2cf9b1..839fe37 100644
+--- a/GlobalStates.qml
++++ b/GlobalStates.qml
+@@ -13,7 +13,7 @@ Singleton {
+     property bool barOpen: true
+     property bool crosshairOpen: false
+     property bool sidebarLeftOpen: false
+-    property bool sidebarLeftPinned: false
++    property bool sidebarLeftPinned: true // Matches SidebarLeft.pin, which starts pinned
+     property bool sidebarRightOpen: false
+     property bool mediaControlsOpen: false
+     // Screen-space X and width of the bar's Media widget, so the media controls
+diff --git a/modules/ii/sidebarLeft/SidebarLeft.qml b/modules/ii/sidebarLeft/SidebarLeft.qml
+index 3f12126..c5192cd 100644
+--- a/modules/ii/sidebarLeft/SidebarLeft.qml
++++ b/modules/ii/sidebarLeft/SidebarLeft.qml
+@@ -11,7 +11,7 @@ import Quickshell.Hyprland
+ Scope { // Scope
+     id: root
+     property bool detach: false
+-    property bool pin: false
++    property bool pin: true // Pinned by default: the AI tab stays open beside your windows
+     property Component contentComponent: SidebarLeftContent {}
+     property Item sidebarContent
+ 

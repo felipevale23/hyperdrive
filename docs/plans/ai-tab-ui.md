@@ -76,7 +76,7 @@ card, a failed step that opens by itself, `/approve`, and the turn fits one scre
 - Unit tests: `tst_opencode.qml` and `tst_blocks.mjs`. A real model refused to print a fake card, so only the parser tests prove that case.
 - Not checked on screen: Tab focus on the card's buttons, Copy on a message with blocks, a saved chat, a subagent card.
 
-### Step 2: polish (patch `0026`)
+### Step 2: polish (patch `0027`)
 
 1. **Status pill** covers messages on scroll. On OpenCode models, take it out of the overlay. Tokens move to the Context panel in Part 2.
    Until then, reserve its height so it can't overlap.
@@ -90,7 +90,7 @@ card, a failed step that opens by itself, `/approve`, and the turn fits one scre
 
 **Done when** nothing overlaps or clips at 460 and 750 px, measured contrast passes, and every control has a hover state and a tooltip.
 
-### Step 3: `/resume` keeps the whole story (patch `0027`)
+### Step 3: `/resume` keeps the whole story (patch `0028`)
 
 `messages()` in the helper drops tool parts, so a denied turn comes back as a question with no answer. Return tool parts and rebuild
 steps and answered cards from them. Old cards must come back answered and can't be actionable.
@@ -133,7 +133,7 @@ The tab keeps its role as a sidebar. It gets what you'd open the web app for, no
 | Providers, servers, plugins, integrations, export | Not in the tab. Keep using the web app or config | Keys stay in the keyring | Out |
 | Theme, fonts, shortcuts, notifications, language | Not needed: the shell owns these | | Out |
 
-### Step 4: panels (patch `0028`)
+### Step 4: panels (patch `0029`)
 
 A `SecondaryTabBar` under the header, shown only on OpenCode models. Direct models keep today's layout.
 
@@ -155,14 +155,14 @@ At the 750 px width (`Ctrl+O`), Changes and Files can show a list beside the con
 
 **Done when** panels switch by mouse and keyboard, the open chat survives switching, and direct models look unchanged.
 
-### Step 5: Chats panel (patch `0029`)
+### Step 5: Chats panel (patch `0030`)
 
 Replaces typing `/history` and `/resume N`. Chats grouped by folder, newest first, with a search box. Click to resume, and the folder comes
 with it. Rename through `PATCH /api/session/{id}`. Delete asks first and removes the journal. Keep the commands working.
 
 **Done when** the test chats can be deleted from the panel, and a chat in another folder opens with the right chip.
 
-### Step 6: Changes panel (patch `0030`)
+### Step 6: Changes panel (patch `0031`)
 
 The files this chat changed, each opening its diff, with undo for the last turn. In a git repo, a second view shows all uncommitted changes
 from `GET /api/vcs/diff`. In a plain folder only the chat's own view exists, because OpenCode has no snapshots there. Read-only otherwise:
@@ -170,13 +170,13 @@ no stage or commit buttons.
 
 **Done when** the numbers match `git diff` in a repo, and a plain folder shows the chat's changes with a clear note.
 
-### Step 7: Context panel (patch `0031`)
+### Step 7: Context panel (patch `0032`)
 
 Tokens against the model's limit, cost, model and agent, folder, and the todo list. Tokens leave the status pill here.
 
 **Done when** totals match the session in `opencode.db`.
 
-### Step 8: Files panel (patch `0032`)
+### Step 8: Files panel (patch `0033`)
 
 A tree of the chat's folder, a read-only viewer using the code block, and search. A click on "Add to message" inserts an `@` mention, so
 the normal checks run. New helper commands `list` and `read`, both limited by `safe_path`. Private files show with a padlock and no content.
