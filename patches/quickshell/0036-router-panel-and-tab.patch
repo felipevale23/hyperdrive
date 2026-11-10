@@ -1,0 +1,458 @@
+--- a/modules/ii/sidebarLeft/AiChat.qml
++++ b/modules/ii/sidebarLeft/AiChat.qml
+@@ -144,10 +144,8 @@
+         },
+         {
+             name: "usage",
+-            description: Translation.tr("Tokens this OpenCode chat used, by agent and model, and 9router today"),
+-            args: [
+-                { name: "budget", description: Translation.tr("Warn when a turn passes this many tokens: /usage budget 300000, 0 for never") },
+-            ],
++            // No args list: it would offer "budget" and Enter would accept it, so a plain /usage could not run.
++            description: Translation.tr("The 9router quota tracker, and the tokens this OpenCode chat used. /usage budget 300000 warns past that many tokens in a turn, 0 for never"),
+             execute: args => root.opencodeOnly(() => {
+                 if (args[0] === "budget") Ai.setOpencodeBudget(args[1]);
+                 else Ai.showOpencodeUsage();
+@@ -375,54 +373,16 @@
+         messageListView.positionViewAtEnd();
+     }
+ 
+-    // The local 9router (decolua/9router). ~/.local/bin/9router-ctl starts and stops it and
+-    // prints its state as JSON. It listens on 127.0.0.1 only and nothing starts it on boot.
+-    QtObject {
+-        id: router
+-        property bool running: false
+-        property bool busy: false
+-        property string error: ""
+-        property string url: "http://127.0.0.1:20128"
+-        property bool report: false // Say the result in the chat, for /router
+-        property string action: ""
+-        function run(what, reportIt) {
+-            if (routerProc.running) return;
+-            router.action = what;
+-            router.report = reportIt;
+-            router.busy = what !== "status";
+-            routerProc.command = [`${Quickshell.env("HOME")}/.local/bin/9router-ctl`, what];
+-            routerProc.running = true;
+-        }
+-    }
+-
+-    Process {
+-        id: routerProc
+-        stdout: StdioCollector {
+-            id: routerOut
+-            onStreamFinished: {
+-                let state = {};
+-                try {
+-                    state = JSON.parse(routerOut.text);
+-                } catch (e) {
+-                    state = { "running": false, "error": Translation.tr("9router-ctl gave no answer") };
+-                }
+-                router.running = state.running === true;
+-                router.error = state.error ?? "";
+-                if (state.url) router.url = state.url;
+-                router.busy = false;
+-                if (!router.report) return;
+-                const message = router.error.length > 0 ? Translation.tr("9router: %1").arg(router.error)
+-                    : router.running ? Translation.tr("9router is running at %1. Its dashboard: %2router open").arg(router.url).arg(root.commandPrefix)
+-                    : Translation.tr("9router is stopped");
+-                Ai.addMessage(message, Ai.interfaceRole);
+-            }
+-        }
+-        onExited: (exitCode, exitStatus) => {
+-            if (exitCode !== 0 && routerOut.text.length === 0) {
+-                router.busy = false;
+-                router.running = false;
+-                router.error = Translation.tr("9router-ctl failed (exit %1)").arg(exitCode);
+-            }
++    // The local 9router: its state is shared with the 9router tab, see services/NineRouter.qml
++    readonly property var router: NineRouter
++    Connections {
++        target: NineRouter
++        function onFinished(report) {
++            if (!report) return;
++            const message = router.error.length > 0 ? Translation.tr("9router: %1").arg(router.error)
++                : router.running ? Translation.tr("9router is running at %1. Its dashboard: %2router open").arg(router.url).arg(root.commandPrefix)
++                : Translation.tr("9router is stopped");
++            Ai.addMessage(message, Ai.interfaceRole);
+         }
+     }
+ 
+@@ -690,7 +650,7 @@
+ 
+             PagePlaceholder {
+                 z: 2
+-                shown: Ai.messageIDs.length === 0 && !agentsPanel.shown
++                shown: Ai.messageIDs.length === 0 && !agentsPanel.shown && !routerPanel.shown
+                 icon: "neurology"
+                 iconComponent: PixelCortex {
+                     pixel: 5
+@@ -713,6 +673,12 @@
+                 anchors.fill: parent
+                 inputField: root.inputField
+             }
++
++            RouterPanel {
++                id: routerPanel
++                z: 4
++                anchors.fill: parent
++            }
+         }
+ 
+         DescriptionBox {
+@@ -1192,7 +1158,10 @@
+                     icon: "smart_toy"
+                     text: Ai.opencodeAgent === "plan" ? Translation.tr("Plan") : Translation.tr("Build")
+                     tooltipText: Translation.tr("Agents: switch, call, watch and create them")
+-                    onClicked: agentsPanel.shown = !agentsPanel.shown
++                    onClicked: {
++                        routerPanel.shown = false;
++                        agentsPanel.shown = !agentsPanel.shown;
++                    }
+                 }
+ 
+                 ApiInputBoxIndicator {
+@@ -1215,15 +1184,14 @@
+                     text: router.busy ? (router.action === "stop" ? Translation.tr("Stopping…") : Translation.tr("Starting…"))
+                         : router.running ? Translation.tr("9router on") : Translation.tr("9router off")
+                     tooltipText: router.error.length > 0
+-                        ? Translation.tr("9router: %1\nClick to try again").arg(router.error)
++                        ? Translation.tr("9router: %1\nClick to open its panel").arg(router.error)
+                         : router.running
+-                        ? Translation.tr("9router is running at %1\nClick to open its dashboard\nStop it with %2router stop").arg(router.url).arg(root.commandPrefix)
++                        ? Translation.tr("9router is running at %1\nClick for its panel: switch, today, quota").arg(router.url)
+                             + (Ai.routerUsage?.today ? `\n\n${Ai.routerSummaryLines()}` : "")
+-                        : Translation.tr("9router, the local AI router, is stopped\nClick to start it")
++                        : Translation.tr("9router, the local AI router, is stopped\nClick for its panel to start it")
+                     onClicked: {
+-                        if (router.busy) return;
+-                        if (router.running) Qt.openUrlExternally(`${router.url}/dashboard`);
+-                        else router.run("start", false);
++                        agentsPanel.shown = false;
++                        routerPanel.shown = !routerPanel.shown;
+                     }
+                 }
+ 
+--- a/modules/ii/sidebarLeft/SidebarLeftContent.qml
++++ b/modules/ii/sidebarLeft/SidebarLeftContent.qml
+@@ -1,6 +1,7 @@
+ import qs.services
+ import qs.modules.common
+ import qs.modules.common.widgets
++import qs.modules.ii.sidebarLeft.aiChat
+ import QtQuick
+ import QtQuick.Controls
+ import QtQuick.Layouts
+@@ -18,6 +19,7 @@
+     property bool animeCloset: Config.options.policies.weeb === 2
+     property var tabButtonList: [
+         ...(root.aiChatEnabled ? [{"icon": "neurology", "iconComponent": cortexIcon, "name": Translation.tr("Intelligence")}] : []),
++        ...(root.aiChatEnabled ? [{"icon": "router", "name": Translation.tr("9router")}] : []),
+         ...(root.translatorEnabled ? [{"icon": "translate", "name": Translation.tr("Translator")}] : []),
+         ...((root.animeEnabled && !root.animeCloset) ? [{"icon": "bookmark_heart", "name": Translation.tr("Anime")}] : [])
+     ]
+@@ -93,6 +95,7 @@
+ 
+                 contentChildren: [
+                     ...(root.aiChatEnabled ? [aiChat.createObject()] : []),
++                    ...(root.aiChatEnabled ? [routerTab.createObject()] : []),
+                     ...(root.translatorEnabled ? [translator.createObject()] : []),
+                     ...((root.tabButtonList.length === 0 || (!root.aiChatEnabled && !root.translatorEnabled && root.animeCloset)) ? [placeholder.createObject()] : []),
+                     ...(root.animeEnabled ? [anime.createObject()] : []),
+@@ -105,6 +108,13 @@
+             AiChat {}
+         }
+         Component {
++            id: routerTab
++            RouterPanel {
++                shown: SwipeView.isCurrentItem // Refreshes when you switch to the tab
++                showClose: false
++            }
++        }
++        Component {
+             id: translator
+             Translator {}
+         }
+--- /dev/null
++++ b/services/NineRouter.qml
+@@ -0,0 +1,58 @@
++pragma Singleton
++pragma ComponentBehavior: Bound
++
++import Quickshell
++import Quickshell.Io
++import QtQuick
++
++/**
++ * The local 9router (decolua/9router). ~/.local/bin/9router-ctl starts and stops it and prints its
++ * state as JSON. It listens on 127.0.0.1 only and nothing starts it on boot. One copy of the state,
++ * shared by the AI tab's chip and the 9router tab.
++ */
++Singleton {
++    id: root
++    property bool running: false
++    property bool busy: false
++    property string error: ""
++    property string url: "http://127.0.0.1:20128"
++    property bool report: false // Say the result in the chat, for /router
++    property string action: ""
++    signal finished(bool report) // After each run, once the state above is updated
++
++    function run(what, reportIt) {
++        if (routerProc.running) return;
++        root.action = what;
++        root.report = reportIt;
++        root.busy = what !== "status";
++        routerProc.command = [`${Quickshell.env("HOME")}/.local/bin/9router-ctl`, what];
++        routerProc.running = true;
++    }
++
++    Process {
++        id: routerProc
++        stdout: StdioCollector {
++            id: routerOut
++            onStreamFinished: {
++                let state = {};
++                try {
++                    state = JSON.parse(routerOut.text);
++                } catch (e) {
++                    state = { "running": false, "error": Translation.tr("9router-ctl gave no answer") };
++                }
++                root.running = state.running === true;
++                root.error = state.error ?? "";
++                if (state.url) root.url = state.url;
++                root.busy = false;
++                root.finished(root.report);
++            }
++        }
++        onExited: (exitCode, exitStatus) => {
++            if (exitCode !== 0 && routerOut.text.length === 0) {
++                root.busy = false;
++                root.running = false;
++                root.error = Translation.tr("9router-ctl failed (exit %1)").arg(exitCode);
++            }
++        }
++    }
++}
+--- /dev/null
++++ b/modules/ii/sidebarLeft/aiChat/RouterPanel.qml
+@@ -0,0 +1,219 @@
++import qs.modules.common
++import qs.modules.common.widgets
++import qs.services
++import QtQuick
++import QtQuick.Layouts
++
++/**
++ * 9router in one place, like the agents panel is for agents: a switch to start or stop it,
++ * today's numbers, which token savers are on, and shortcuts to the dashboard and the quota tracker.
++ * The router object (state and start/stop) lives in AiChat.qml.
++ */
++Rectangle {
++    id: root
++    property bool shown: false
++    property var router: NineRouter
++    property bool showClose: true // The 9router tab has no panel to close
++
++    visible: shown
++    color: Appearance.colors.colLayer1Base // Solid, so the chat behind it never shows through
++    onShownChanged: {
++        if (!shown) return;
++        root.router.run("status", false);
++        Ai.refreshRouterUsage();
++    }
++
++    readonly property var today: Ai.routerUsage?.today
++    readonly property var savers: Ai.routerUsage?.savers ?? ({})
++
++    component SectionTitle: StyledText {
++        Layout.fillWidth: true
++        Layout.topMargin: 10
++        wrapMode: Text.Wrap
++        font.pixelSize: Appearance.font.pixelSize.small
++        color: Appearance.colors.colOnSurfaceVariant
++    }
++
++    component PanelButton: RippleButton {
++        id: panelButton
++        property string label
++        property string tooltip: ""
++        implicitHeight: 32
++        implicitWidth: panelButtonText.implicitWidth + 24
++        buttonRadius: height / 2
++        colBackground: Appearance.colors.colLayer3
++        colBackgroundHover: Appearance.colors.colLayer3Hover
++        colRipple: Appearance.colors.colLayer3Active
++        contentItem: StyledText {
++            id: panelButtonText
++            horizontalAlignment: Text.AlignHCenter
++            verticalAlignment: Text.AlignVCenter
++            font.pixelSize: Appearance.font.pixelSize.small
++            color: Appearance.colors.colOnLayer2
++            text: panelButton.label
++        }
++        StyledToolTip {
++            extraVisibleCondition: panelButton.tooltip.length > 0
++            text: panelButton.tooltip
++        }
++    }
++
++    component InfoRow: Rectangle {
++        id: infoRow
++        property string label
++        property string value
++        Layout.fillWidth: true
++        implicitHeight: infoRowLayout.implicitHeight + 16
++        radius: Appearance.rounding.small
++        color: Appearance.colors.colLayer2
++        RowLayout {
++            id: infoRowLayout
++            anchors {
++                left: parent.left
++                right: parent.right
++                verticalCenter: parent.verticalCenter
++                margins: 10
++            }
++            spacing: 10
++            StyledText {
++                color: Appearance.colors.colOnLayer1
++                text: infoRow.label
++            }
++            StyledText {
++                Layout.fillWidth: true
++                horizontalAlignment: Text.AlignRight
++                wrapMode: Text.Wrap
++                textFormat: Text.PlainText
++                font.pixelSize: Appearance.font.pixelSize.smaller
++                color: Appearance.colors.colOnSurfaceVariant
++                text: infoRow.value
++            }
++        }
++    }
++
++    StyledFlickable {
++        anchors.fill: parent
++        anchors.margins: 12
++        clip: true
++        contentHeight: panelColumn.implicitHeight
++
++        ColumnLayout {
++            id: panelColumn
++            width: parent.width
++            spacing: 6
++
++            RowLayout {
++                Layout.fillWidth: true
++                StyledText {
++                    Layout.fillWidth: true
++                    font.pixelSize: Appearance.font.pixelSize.larger
++                    color: Appearance.colors.colOnLayer1
++                    text: Translation.tr("9router")
++                }
++                PanelButton {
++                    visible: root.showClose
++                    label: Translation.tr("Close")
++                    onClicked: root.shown = false
++                }
++            }
++
++            Rectangle { // The switch
++                Layout.fillWidth: true
++                implicitHeight: switchRow.implicitHeight + 16
++                radius: Appearance.rounding.small
++                color: Appearance.colors.colLayer2
++                RowLayout {
++                    id: switchRow
++                    anchors {
++                        left: parent.left
++                        right: parent.right
++                        verticalCenter: parent.verticalCenter
++                        margins: 10
++                    }
++                    spacing: 10
++                    ColumnLayout {
++                        Layout.fillWidth: true
++                        spacing: 0
++                        StyledText {
++                            color: Appearance.colors.colOnLayer1
++                            text: root.router.busy ? (root.router.action === "stop" ? Translation.tr("Stopping…") : Translation.tr("Starting…"))
++                                : root.router.running ? Translation.tr("On") : Translation.tr("Off")
++                        }
++                        StyledText {
++                            Layout.fillWidth: true
++                            wrapMode: Text.Wrap
++                            textFormat: Text.PlainText
++                            font.pixelSize: Appearance.font.pixelSize.smaller
++                            color: root.router.error.length > 0 ? Appearance.colors.colError : Appearance.colors.colOnSurfaceVariant
++                            text: root.router.error.length > 0 ? root.router.error
++                                : root.router.running ? Translation.tr("The local AI router is running at %1").arg(root.router.url)
++                                : Translation.tr("Stopped. Models that go through 9router don't work until it starts")
++                        }
++                    }
++                    StyledSwitch {
++                        id: routerSwitch
++                        enabled: !root.router.busy
++                        checked: root.router.running
++                        onClicked: {
++                            root.router.run(checked ? "start" : "stop", false);
++                            checked = Qt.binding(() => root.router.running); // The switch follows the real state, not the click
++                        }
++                        StyledToolTip {
++                            text: routerSwitch.checked ? Translation.tr("Click to stop 9router") : Translation.tr("Click to start 9router")
++                        }
++                    }
++                }
++            }
++
++            RowLayout {
++                spacing: 6
++                PanelButton {
++                    label: Translation.tr("Open dashboard")
++                    tooltip: Translation.tr("Opens 9router's dashboard in the browser")
++                    enabled: root.router.running
++                    onClicked: Qt.openUrlExternally(`${root.router.url}/dashboard`)
++                }
++                PanelButton {
++                    label: Translation.tr("Quota tracker")
++                    tooltip: Translation.tr("Posts each account's limits and resets in the chat, like /usage")
++                    enabled: root.router.running
++                    onClicked: {
++                        Ai.showQuotaTracker();
++                        root.shown = false;
++                    }
++                }
++            }
++
++            SectionTitle {
++                visible: root.router.running && root.today !== undefined
++                text: Translation.tr("Today")
++            }
++            InfoRow {
++                visible: root.router.running && root.today !== undefined
++                label: Translation.tr("Requests")
++                value: `${root.today?.requests ?? 0}`
++            }
++            InfoRow {
++                visible: root.router.running && root.today !== undefined
++                label: Translation.tr("Tokens")
++                value: Translation.tr("%1 sent · %2 written").arg(Ai.shortTokens(root.today?.promptTokens ?? 0)).arg(Ai.shortTokens(root.today?.completionTokens ?? 0))
++            }
++            InfoRow {
++                visible: root.router.running && Object.keys(root.today?.byProvider ?? {}).length > 0
++                label: Translation.tr("By provider")
++                value: Object.entries(root.today?.byProvider ?? {}).sort(([, a], [, b]) => b.requests - a.requests)
++                    .map(([name, provider]) => `${name} ${provider.requests}`).join(" · ")
++            }
++
++            SectionTitle {
++                visible: root.today !== undefined
++                text: Translation.tr("Token savers")
++            }
++            InfoRow {
++                visible: root.today !== undefined
++                label: Translation.tr("On")
++                value: Object.entries(root.savers).filter(([, on]) => on).map(([name]) => name).join(", ") || Translation.tr("none")
++            }
++        }
++    }
++}

@@ -1,6 +1,6 @@
 --- a/services/Ai.qml
 +++ b/services/Ai.qml
-@@ -673,8 +673,55 @@
+@@ -673,9 +673,56 @@
          return root.apiStrategies.opencode.shortTokens(Math.round(count));
      }
  
@@ -53,7 +53,14 @@
 +
 +    // /usage: the quota tracker, then this chat's tokens by agent and model, context fill, the budget, and 9router today
      function showOpencodeUsage() {
+-        const session = opencodeSessionOrAdvice();
 +        root.showQuotaTracker();
-         const session = opencodeSessionOrAdvice();
++        const session = root.apiStrategies.opencode.sessionId; // No chat yet is fine here: the quota stands alone
          if (session.length === 0) return;
          root.refreshRouterUsage();
+         runOpencode(["usage", session], usage => {
+@@ -1438,3 +1485,4 @@
+         }
+     }
+ }
++
