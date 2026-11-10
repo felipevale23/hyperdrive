@@ -1042,6 +1042,93 @@ def folders():
     return sorted(found)
 
 
+INSTRUCTIONS = "AGENTS.md"  # OpenCode reads this file in the project folder at the start of every chat
+INSTRUCTIONS_LIMIT = 20000
+PROJECTS = os.path.expanduser("~/.agents/projects")
+SKILL_FOLDERS = (os.path.expanduser("~/.agents/skills"), ".agents/skills")  # the second is inside a project
+PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}")
+INSTRUCTIONS_TEMPLATE = """# {name}
+
+## What this is
+One or two lines: what the project does and who it is for.
+
+## Stack
+Languages, frameworks and tools it uses.
+
+## Commands
+How to run, test and build it.
+
+## Conventions
+How code is named and organised here, and what to copy when adding something new.
+
+## Don't
+Things that look right but break this project.
+"""
+
+
+def skill_list(folder):
+    """Name and one-line description of each skill, from the user's folder and the project's."""
+    found = []
+    for base in (SKILL_FOLDERS[0], os.path.join(folder, SKILL_FOLDERS[1])):
+        try:
+            names = sorted(os.listdir(base))
+        except OSError:
+            continue
+        for name in names:
+            try:
+                with open(os.path.join(base, name, "SKILL.md"), encoding="utf-8") as file:
+                    head = file.read(2000)
+            except OSError:
+                continue
+            match = re.search(r"^description:[ \t]*(.*)$(\n[ \t]+.*)?", head, re.M)
+            text = ""
+            if match:
+                text = match.group(1).strip()
+                if text in (">", "|", ">-", "|-", ""):  # A folded value sits on the next line
+                    text = (match.group(2) or "").strip()
+            found.append({"name": name, "description": text.strip("\"'")[:160]})
+    return found
+
+
+def project_info(folder):
+    real = check_folder(folder)
+    text = None
+    try:
+        with open(os.path.join(real, INSTRUCTIONS), encoding="utf-8") as file:
+            text = file.read(INSTRUCTIONS_LIMIT + 1)
+    except OSError:
+        pass
+    return {"folder": real, "instructions": text, "skills": skill_list(real)}
+
+
+def project_save(folder, text):
+    real = check_folder(folder)
+    if len(text) > INSTRUCTIONS_LIMIT:
+        raise ValueError(f"keep the instructions under {INSTRUCTIONS_LIMIT} characters")
+    if SECRET.search(text):
+        raise ValueError("this looks like it holds a secret, and hosted models would read it, so it wasn't saved")
+    path = os.path.join(real, INSTRUCTIONS)
+    temporary = f"{path}.{os.getpid()}"
+    with open(temporary, "w", encoding="utf-8") as file:
+        file.write(text.rstrip("\n") + "\n")
+    os.replace(temporary, path)
+    return project_info(real)
+
+
+def project_new(name):
+    """A new folder in ~/.agents/projects with an AGENTS.md to fill in. Never touches one that exists."""
+    if not PROJECT_NAME.fullmatch(name):
+        raise ValueError("use letters, digits, dots, dashes or underscores, up to 40, starting with a letter or digit")
+    os.makedirs(PROJECTS, exist_ok=True)
+    path = os.path.join(PROJECTS, name)
+    if os.path.exists(path):
+        raise ValueError(f"{name} already exists in ~/.agents/projects")
+    os.mkdir(path)
+    with open(os.path.join(path, INSTRUCTIONS), "w", encoding="utf-8") as file:
+        file.write(INSTRUCTIONS_TEMPLATE.format(name=name))
+    return check_folder(path)
+
+
 def sessions():
     query = urllib.parse.urlencode({"limit": 100, "order": "desc"})
     found = checked(connect().call("GET", f"/api/session?{query}"))["data"]
@@ -1157,6 +1244,10 @@ def main():
         return report(folders)
     if len(args) == 2 and args[0] == "check":
         return report(check_folder, args[1])
+    if len(args) == 2 and args[0] in ("project-info", "project-new"):
+        return report({"project-info": project_info, "project-new": project_new}[args[0]], args[1])
+    if len(args) == 3 and args[0] == "project-save":
+        return report(project_save, *args[1:])
     if len(args) == 4 and args[0] == "reply":
         return reply(*args[1:])
     if args == ["sessions"]:

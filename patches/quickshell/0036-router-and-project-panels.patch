@@ -83,11 +83,11 @@
              PagePlaceholder {
                  z: 2
 -                shown: Ai.messageIDs.length === 0 && !agentsPanel.shown
-+                shown: Ai.messageIDs.length === 0 && !agentsPanel.shown && !routerPanel.shown
++                shown: Ai.messageIDs.length === 0 && !agentsPanel.shown && !routerPanel.shown && !projectPanel.shown
                  icon: "neurology"
                  iconComponent: PixelCortex {
                      pixel: 5
-@@ -713,6 +673,12 @@
+@@ -713,6 +673,18 @@
                  anchors.fill: parent
                  inputField: root.inputField
              }
@@ -97,22 +97,45 @@
 +                z: 4
 +                anchors.fill: parent
 +            }
++
++            ProjectPanel {
++                id: projectPanel
++                z: 4
++                anchors.fill: parent
++            }
          }
  
          DescriptionBox {
-@@ -1192,7 +1158,10 @@
+@@ -1192,7 +1164,11 @@
                      icon: "smart_toy"
                      text: Ai.opencodeAgent === "plan" ? Translation.tr("Plan") : Translation.tr("Build")
                      tooltipText: Translation.tr("Agents: switch, call, watch and create them")
 -                    onClicked: agentsPanel.shown = !agentsPanel.shown
 +                    onClicked: {
 +                        routerPanel.shown = false;
++                        projectPanel.shown = false;
 +                        agentsPanel.shown = !agentsPanel.shown;
 +                    }
                  }
  
                  ApiInputBoxIndicator {
-@@ -1215,15 +1184,14 @@
+@@ -1201,11 +1177,11 @@
+                     icon: "folder"
+                     readonly property string folderName: Ai.opencodeFolder.length > 0 ? Ai.opencodeFolder.split("/").pop() : ".agents"
+                     text: folderName.length > 18 ? `${folderName.slice(0, 17)}…` : folderName
+-                    tooltipText: Translation.tr("Project folder: %1\nClick to choose another").arg(Ai.opencodeFolder.length > 0 ? Ai.opencodeFolder : "~/.agents")
++                    tooltipText: Translation.tr("Project folder: %1\nClick for the project panel: instructions, memory, skills, new project").arg(Ai.opencodeFolder.length > 0 ? Ai.opencodeFolder : "~/.agents")
+                     onClicked: {
+-                        messageInputField.text = `${root.commandPrefix}project `;
+-                        messageInputField.cursorPosition = messageInputField.text.length;
+-                        messageInputField.forceActiveFocus();
++                        agentsPanel.shown = false;
++                        routerPanel.shown = false;
++                        projectPanel.shown = !projectPanel.shown;
+                     }
+                 }
+ 
+@@ -1215,15 +1191,15 @@
                      text: router.busy ? (router.action === "stop" ? Translation.tr("Stopping…") : Translation.tr("Starting…"))
                          : router.running ? Translation.tr("9router on") : Translation.tr("9router off")
                      tooltipText: router.error.length > 0
@@ -129,6 +152,7 @@
 -                        if (router.running) Qt.openUrlExternally(`${router.url}/dashboard`);
 -                        else router.run("start", false);
 +                        agentsPanel.shown = false;
++                        projectPanel.shown = false;
 +                        routerPanel.shown = !routerPanel.shown;
                      }
                  }
@@ -501,6 +525,351 @@
 +                visible: root.today !== undefined
 +                label: Translation.tr("On")
 +                value: Object.entries(root.savers).filter(([, on]) => on).map(([name]) => name).join(", ") || Translation.tr("none")
++            }
++        }
++    }
++}
+--- /dev/null
++++ b/modules/ii/sidebarLeft/aiChat/ProjectPanel.qml
+@@ -0,0 +1,342 @@
++import qs.modules.common
++import qs.modules.common.widgets
++import qs.services
++import QtQuick
++import QtQuick.Layouts
++
++/**
++ * What the models know about your work, in one place: the project folder (and a new one from
++ * scratch), its AGENTS.md instructions, the facts every new chat starts with, and the skills found.
++ * Two buttons ask the model to learn from the chat. Everything it shows is plain text, because it
++ * comes from files a model can write.
++ */
++Rectangle {
++    id: root
++    property bool shown: false
++    property var info: null // From opencode-tab project-info: folder, instructions, skills
++    property var facts: []
++    property var knownFolders: []
++    property string panelError: ""
++    readonly property int factLimit: 50
++
++    readonly property string folder: root.info?.folder ?? (Ai.opencodeFolder.length > 0 ? Ai.opencodeFolder : "~/.agents")
++    readonly property string savedInstructions: root.info?.instructions ?? ""
++    readonly property bool dirty: instructionsField.text !== root.savedInstructions
++
++    visible: shown
++    color: Appearance.colors.colLayer1Base // Solid, so the chat behind it never shows through
++    onShownChanged: {
++        if (shown) refresh();
++    }
++
++    // One helper process at a time, so each step starts the next
++    function refresh() {
++        root.panelError = "";
++        Ai.runAgentTool(["project-info", Ai.opencodeFolder], info => {
++            root.info = info;
++            instructionsField.text = info.instructions ?? "";
++            Ai.runAgentTool(["memory"], facts => {
++                root.facts = facts;
++                Ai.runAgentTool(["folders"], folders => root.knownFolders = folders, () => {});
++            }, error => root.panelError = error);
++        }, error => root.panelError = error);
++    }
++
++    function saveInstructions() {
++        root.panelError = "";
++        Ai.runAgentTool(["project-save", root.folder, instructionsField.text], info => {
++            root.info = info;
++            instructionsField.text = info.instructions ?? "";
++        }, error => root.panelError = error);
++    }
++
++    function createProject() {
++        root.panelError = "";
++        Ai.runAgentTool(["project-new", newNameField.text.trim()], folder => {
++            newNameField.text = "";
++            root.shown = false;
++            Ai.chooseOpencodeFolder(folder); // A new chat in the new folder
++        }, error => root.panelError = error);
++    }
++
++    function addFact() {
++        root.panelError = "";
++        Ai.runAgentTool(["memory-add", factField.text], facts => {
++            factField.text = "";
++            root.facts = facts;
++        }, error => root.panelError = error);
++    }
++
++    function forgetFact(index) {
++        root.panelError = "";
++        Ai.runAgentTool(["memory-forget", `${index + 1}`], facts => root.facts = facts, error => root.panelError = error);
++    }
++
++    function askModel(prompt) {
++        root.shown = false;
++        Ai.sendUserMessage(prompt);
++    }
++
++    readonly property string instructionsTemplate: Translation.tr("# %1\n\n## What this is\nOne or two lines: what the project does and who it is for.\n\n## Stack\nLanguages, frameworks and tools it uses.\n\n## Commands\nHow to run, test and build it.\n\n## Conventions\nHow code is named and organised here, and what to copy when adding something new.\n\n## Don't\nThings that look right but break this project.\n")
++        .arg(root.folder.split("/").pop())
++
++    component SectionTitle: StyledText {
++        Layout.fillWidth: true
++        Layout.topMargin: 12
++        wrapMode: Text.Wrap
++        font.pixelSize: Appearance.font.pixelSize.small
++        color: Appearance.colors.colOnSurfaceVariant
++    }
++
++    component Hint: StyledText {
++        Layout.fillWidth: true
++        wrapMode: Text.Wrap
++        textFormat: Text.PlainText
++        font.pixelSize: Appearance.font.pixelSize.smaller
++        color: Appearance.colors.colOnSurfaceVariant
++    }
++
++    component PanelButton: RippleButton {
++        id: panelButton
++        property string label
++        property string tooltip: ""
++        implicitHeight: 32
++        implicitWidth: panelButtonText.implicitWidth + 24
++        buttonRadius: height / 2
++        colBackground: Appearance.colors.colLayer3
++        colBackgroundHover: Appearance.colors.colLayer3Hover
++        colRipple: Appearance.colors.colLayer3Active
++        contentItem: StyledText {
++            id: panelButtonText
++            horizontalAlignment: Text.AlignHCenter
++            verticalAlignment: Text.AlignVCenter
++            font.pixelSize: Appearance.font.pixelSize.small
++            color: Appearance.colors.colOnLayer2
++            text: panelButton.label
++        }
++        StyledToolTip {
++            extraVisibleCondition: panelButton.tooltip.length > 0
++            text: panelButton.tooltip
++        }
++    }
++
++    component Card: Rectangle {
++        default property alias content: cardColumn.data
++        Layout.fillWidth: true
++        implicitHeight: cardColumn.implicitHeight + 16
++        radius: Appearance.rounding.small
++        color: Appearance.colors.colLayer2
++        ColumnLayout {
++            id: cardColumn
++            anchors {
++                left: parent.left
++                right: parent.right
++                top: parent.top
++                margins: 8
++            }
++            spacing: 6
++        }
++    }
++
++    StyledFlickable {
++        anchors.fill: parent
++        anchors.margins: 12
++        clip: true
++        contentHeight: panelColumn.implicitHeight
++
++        ColumnLayout {
++            id: panelColumn
++            width: parent.width
++            spacing: 6
++
++            RowLayout {
++                Layout.fillWidth: true
++                StyledText {
++                    Layout.fillWidth: true
++                    font.pixelSize: Appearance.font.pixelSize.larger
++                    color: Appearance.colors.colOnLayer1
++                    text: Translation.tr("Project and context")
++                }
++                PanelButton {
++                    label: Translation.tr("Close")
++                    onClicked: root.shown = false
++                }
++            }
++            Hint {
++                text: Translation.tr("What the models read before they answer: the project's instructions, the facts you keep, and the skills they can use.")
++            }
++            StyledText {
++                visible: root.panelError.length > 0
++                Layout.fillWidth: true
++                textFormat: Text.PlainText
++                wrapMode: Text.Wrap
++                font.pixelSize: Appearance.font.pixelSize.small
++                color: Appearance.colors.colError
++                text: root.panelError
++            }
++
++            SectionTitle { text: Translation.tr("Folder") }
++            Card {
++                StyledText {
++                    Layout.fillWidth: true
++                    textFormat: Text.PlainText
++                    wrapMode: Text.WrapAnywhere
++                    color: Appearance.colors.colOnLayer1
++                    text: root.folder
++                }
++                Hint { text: Translation.tr("Models can read files here without asking. Another folder starts a new chat.") }
++                Flow {
++                    Layout.fillWidth: true
++                    spacing: 6
++                    Repeater {
++                        model: root.knownFolders.filter(path => path !== root.folder)
++                        delegate: PanelButton {
++                            required property string modelData
++                            label: modelData.split("/").pop() || modelData
++                            tooltip: Translation.tr("%1\nStarts a new chat here").arg(modelData)
++                            onClicked: {
++                                root.shown = false;
++                                Ai.chooseOpencodeFolder(modelData);
++                            }
++                        }
++                    }
++                }
++            }
++
++            SectionTitle { text: Translation.tr("New project") }
++            Card {
++                Hint { text: Translation.tr("Makes a folder in ~/.agents/projects with an AGENTS.md to fill in, and starts a chat there.") }
++                RowLayout {
++                    Layout.fillWidth: true
++                    spacing: 6
++                    MaterialTextField {
++                        id: newNameField
++                        Layout.fillWidth: true
++                        placeholderText: Translation.tr("Name, like my-app")
++                        onAccepted: root.createProject()
++                    }
++                    PanelButton {
++                        label: Translation.tr("Create")
++                        enabled: newNameField.text.trim().length > 0
++                        onClicked: root.createProject()
++                    }
++                }
++            }
++
++            SectionTitle { text: Translation.tr("Project instructions (AGENTS.md)") }
++            Card {
++                Hint {
++                    text: root.info && root.info.instructions === null
++                        ? Translation.tr("This folder has no AGENTS.md yet. Say what the project is, its commands and its rules, and every chat here starts knowing them.")
++                        : Translation.tr("Every chat in this folder reads this first. Keep it short and true. No secrets: hosted models read it.")
++                }
++                MaterialTextArea {
++                    id: instructionsField
++                    Layout.fillWidth: true
++                    Layout.preferredHeight: 180
++                    placeholderText: Translation.tr("What this project is, how to run it, what to avoid")
++                }
++                RowLayout {
++                    Layout.fillWidth: true
++                    spacing: 6
++                    PanelButton {
++                        visible: instructionsField.text.length === 0
++                        label: Translation.tr("Use a template")
++                        onClicked: instructionsField.text = root.instructionsTemplate
++                    }
++                    PanelButton {
++                        label: Translation.tr("Improve from this chat")
++                        tooltip: Translation.tr("Asks the model to compare AGENTS.md with what you did here and suggest edits. It changes nothing until you agree")
++                        enabled: !Ai.busy
++                        onClicked: root.askModel(Translation.tr("Read AGENTS.md in this project, then look back over this chat. Suggest short edits that would have saved us time: commands we had to find, conventions we had to explain, mistakes to avoid. Show them as a list. Do not change any file until I agree."))
++                    }
++                    Item { Layout.fillWidth: true }
++                    PanelButton {
++                        label: root.dirty ? Translation.tr("Save") : Translation.tr("Saved")
++                        enabled: root.dirty
++                        onClicked: root.saveInstructions()
++                    }
++                }
++            }
++
++            SectionTitle { text: Translation.tr("Memory: facts every new chat starts with (%1 of %2)").arg(root.facts.length).arg(root.factLimit) }
++            Card {
++                Repeater {
++                    model: root.facts
++                    delegate: RowLayout {
++                        id: factRow
++                        required property string modelData
++                        required property int index
++                        Layout.fillWidth: true
++                        spacing: 6
++                        StyledText {
++                            Layout.fillWidth: true
++                            textFormat: Text.PlainText
++                            wrapMode: Text.Wrap
++                            color: Appearance.colors.colOnLayer1
++                            text: factRow.modelData
++                        }
++                        PanelButton {
++                            label: "✕"
++                            tooltip: Translation.tr("Forget this fact")
++                            onClicked: root.forgetFact(factRow.index)
++                        }
++                    }
++                }
++                Hint {
++                    visible: root.facts.length === 0
++                    text: Translation.tr("Nothing yet. Add what the models should always know: your stack, how you like answers, rules for your projects.")
++                }
++                RowLayout {
++                    Layout.fillWidth: true
++                    spacing: 6
++                    MaterialTextField {
++                        id: factField
++                        Layout.fillWidth: true
++                        placeholderText: Translation.tr("A lasting fact or preference, one sentence")
++                        onAccepted: root.addFact()
++                    }
++                    PanelButton {
++                        label: Translation.tr("Add")
++                        enabled: factField.text.trim().length > 0
++                        onClicked: root.addFact()
++                    }
++                }
++                PanelButton {
++                    label: Translation.tr("Learn from this chat")
++                    tooltip: Translation.tr("Asks the model to pick lasting facts from this chat and save them. You approve each one")
++                    enabled: !Ai.busy
++                    onClicked: root.askModel(Translation.tr("Look back over this chat. Pick up to three lasting facts or preferences about me or my projects that a future chat should know. Save each with the memory_remember tool, one short sentence each. Skip anything private, temporary or already remembered. If there is nothing worth keeping, say so."))
++                }
++            }
++
++            SectionTitle { text: Translation.tr("Skills the models can use (%1)").arg(root.info?.skills?.length ?? 0) }
++            Card {
++                Repeater {
++                    model: root.info?.skills ?? []
++                    delegate: ColumnLayout {
++                        id: skillRow
++                        required property var modelData
++                        Layout.fillWidth: true
++                        spacing: 0
++                        StyledText {
++                            Layout.fillWidth: true
++                            textFormat: Text.PlainText
++                            elide: Text.ElideRight
++                            color: Appearance.colors.colOnLayer1
++                            text: skillRow.modelData.name
++                        }
++                        Hint {
++                            visible: skillRow.modelData.description.length > 0
++                            text: skillRow.modelData.description
++                        }
++                    }
++                }
++                Hint {
++                    visible: (root.info?.skills?.length ?? 0) === 0
++                    text: Translation.tr("None found. Skills live in ~/.agents/skills, or in .agents/skills inside the project.")
++                }
 +            }
 +        }
 +    }
