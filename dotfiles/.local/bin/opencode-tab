@@ -886,7 +886,7 @@ def run_turn(model, session, mode, agent, folder, text, regen=0, plain_ok=True):
         emit({"type": "session", "id": sid})
         spent[sid] = blank(agent, model)
         turn["limit"] = (info.get("limit") or {}).get("context")
-        if not variant:
+        if not variant and level != "off":  # a quick answer keeps its skeleton
             emit({"type": "thinking", "level": "default", "reason": "this model has no thinking levels"})
 
         note = CHAT_ONLY_NOTE if plain else (ADVISOR_NOTE if mode == "tools" and advising() else "")
