@@ -79,6 +79,15 @@
          if (session.length === 0) return;
          root.refreshRouterUsage();
          runOpencode(["usage", session], usage => {
+@@ -806,7 +866,7 @@
+     function setOpencodeTeam(role, value, onFailed) {
+         root.runAgentTool(["team-set", role, value], team => {
+             root.opencodeTeam = team;
+-            if (role !== "advising") root.reloadOpencodeServer();
++            if (role !== "advising" && role !== "search") root.reloadOpencodeServer(); // Search is read at each message
+         }, onFailed);
+     }
+ 
 @@ -1438,3 +1498,4 @@
          }
      }
@@ -113,3 +122,64 @@
              "state": "pending",
              "outcome": "",
          };
+--- a/modules/ii/sidebarLeft/aiChat/AgentsPanel.qml
++++ b/modules/ii/sidebarLeft/aiChat/AgentsPanel.qml
+@@ -312,6 +312,58 @@
+                 modelId: Ai.opencodeTeam.subagents ?? ""
+             }
+ 
++            Rectangle { // Which web search the research agent uses: Exa, 9router (Google through Antigravity), or both
++                Layout.fillWidth: true
++                implicitHeight: searchColumn.implicitHeight + 16
++                radius: Appearance.rounding.small
++                color: Appearance.colors.colLayer2
++                ColumnLayout {
++                    id: searchColumn
++                    anchors {
++                        left: parent.left
++                        right: parent.right
++                        top: parent.top
++                        margins: 8
++                    }
++                    spacing: 6
++                    StyledText {
++                        Layout.fillWidth: true
++                        color: Appearance.colors.colOnLayer1
++                        text: Translation.tr("Web search")
++                    }
++                    StyledText {
++                        Layout.fillWidth: true
++                        wrapMode: Text.Wrap
++                        font.pixelSize: Appearance.font.pixelSize.smaller
++                        color: Appearance.colors.colOnSurfaceVariant
++                        text: ({
++                            "exa": Translation.tr("Exa: OpenCode's own search and Exa's tools. Nothing runs a command."),
++                            "9router": Translation.tr("9router: Google's search through your Antigravity account, with the web-search command. Exa is off. Each search asks, unless you allow it with /allow run web-search."),
++                            "both": Translation.tr("Both: the research agent tries Exa first, and web-search when you ask for it or Exa finds nothing."),
++                        })[Ai.opencodeTeam.search ?? "exa"]
++                    }
++                    RowLayout {
++                        Layout.fillWidth: true
++                        spacing: 6
++                        Repeater {
++                            model: [
++                                { "id": "exa", "label": Translation.tr("Exa") },
++                                { "id": "9router", "label": Translation.tr("9router") },
++                                { "id": "both", "label": Translation.tr("Both") },
++                            ]
++                            delegate: PanelButton {
++                                required property var modelData
++                                readonly property bool chosen: (Ai.opencodeTeam.search ?? "exa") === modelData.id
++                                label: chosen ? `✓ ${modelData.label}` : modelData.label
++                                colBackground: chosen ? Appearance.colors.colSecondaryContainer : Appearance.colors.colLayer3
++                                colBackgroundHover: chosen ? Appearance.colors.colSecondaryContainerHover : Appearance.colors.colLayer3Hover
++                                onClicked: Ai.setOpencodeTeam("search", modelData.id, error => root.panelError = error)
++                            }
++                        }
++                    }
++                }
++            }
++
+             SectionTitle {
+                 text: Translation.tr("Who answers")
+             }

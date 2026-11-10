@@ -1,0 +1,98 @@
+#!/usr/bin/python3
+"""Searches the web through the local 9router, which asks Google (through Antigravity) or a search service you add to it.
+
+  web-search "QUERY"                  search with the default provider
+  web-search "QUERY" -p PROVIDER      pick one: gemini, antigravity, tavily, brave ...
+  web-search "QUERY" -n 8             how many results, 1 to 20
+  web-search --providers              list what 9router can search with right now
+
+Default is Google's search through your Antigravity account, so use it for real questions, not in a loop. The 9router key comes from the shell's keyring and never reaches the command line or the output. Prints the answer
+or the results, then the sources, as plain text. Exa stays available as its own tools; this is the other way to search.
+"""
+import json
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+URL = "http://127.0.0.1:20128"
+DEFAULT_PROVIDER = "antigravity"  # Google search through your Antigravity account. Gemini's own path is broken: 9router asks a retired model
+
+
+def key():
+    raw = subprocess.run(["secret-tool", "lookup", "application", "9router", "kind", "api"],
+                         capture_output=True, text=True).stdout.strip()
+    if not raw:
+        sys.exit("No 9router key in the keyring (application 9router, kind api).")
+    return raw
+
+
+def call(path, body=None):
+    data = None if body is None else json.dumps(body).encode()
+    request = urllib.request.Request(URL + path, data, {"Content-Type": "application/json", "Authorization": f"Bearer {key()}"})
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        try:
+            message = json.load(error).get("error", {})
+            message = message.get("message", "") if isinstance(message, dict) else str(message)
+        except ValueError:
+            message = ""
+        sys.exit(f"9router answered {error.code}: {message[:300] or error.reason}")
+    except (urllib.error.URLError, TimeoutError) as error:
+        sys.exit(f"Could not reach 9router at {URL}: {error}. Start it with the 9router chip.")
+
+
+def show(reply):
+    answer = reply.get("answer") or reply.get("text") or ""
+    if isinstance(answer, dict):
+        answer = answer.get("text", "")
+    if answer:
+        print(answer.strip(), "\n")
+    results = reply.get("results") or []
+    for number, item in enumerate(results, 1):
+        title = (item.get("title") or "").strip()
+        snippet = (item.get("snippet") or item.get("content") or item.get("description") or "").strip()
+        print(f"{number}. {title}\n   {item.get('url', '')}" + (f"\n   {snippet[:300]}" if snippet else ""))
+    citations = reply.get("citations") or reply.get("sources") or []
+    if citations:
+        print("Sources:")
+        for number, item in enumerate(citations, 1):
+            if isinstance(item, str):
+                item = {"url": item}
+            print(f"{number}. {(item.get('title') or '').strip()} {item.get('url', '')}".replace("  ", " "))
+    if not (answer or results or citations):
+        print("No results.")
+
+
+def main(argv):
+    if argv in (["-h"], ["--help"]):
+        print(__doc__.strip())
+        return 0
+    if argv == ["--providers"]:
+        found = call("/v1/models/web").get("data", [])
+        names = sorted({item["id"].split("/")[0] for item in found if item.get("kind") == "webSearch"})
+        print("Search providers in 9router: " + ", ".join(["antigravity (Google, through your Antigravity account)"] + names)
+              + f"\nDefault: {DEFAULT_PROVIDER}. gemini is listed by 9router but fails today: its search model is retired.")
+        return 0
+    provider, count, words = DEFAULT_PROVIDER, 5, []
+    args = iter(argv)
+    for arg in args:
+        if arg in ("-p", "--provider"):
+            provider = next(args, "") or provider
+        elif arg in ("-n", "--max"):
+            value = next(args, "")
+            count = max(1, min(20, int(value))) if value.isdigit() else count
+        else:
+            words.append(arg)
+    query = " ".join(words).strip()
+    if not query:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    show(call("/v1/search", {"model": provider, "query": query, "max_results": count}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

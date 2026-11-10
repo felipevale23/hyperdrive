@@ -235,6 +235,26 @@ def team_settings():
         return {}
 
 
+SEARCH_CHOICES = ("exa", "9router", "both")
+
+
+def search_choice():
+    """Which web search the research agent gets: Exa's tools, the 9router web-search script, or both."""
+    value = team_settings().get("search", "exa")
+    return value if value in SEARCH_CHOICES else "exa"
+
+
+def research_rules():
+    """The research child's own rules: Exa's tools only when asked for, and a shell for web-search only when asked for."""
+    choice = search_choice()
+    rules = list(TOOLS_ON)
+    if choice == "9router":  # OpenCode's own websearch is Exa too
+        rules += [{"action": tool, "resource": "*", "effect": "deny"} for tool in ("exa_*", "websearch")]
+    if choice == "exa":
+        rules.append({"action": "shell", "resource": "*", "effect": "deny"})
+    return rules
+
+
 def budget():
     value = team_settings().get("budget", DEFAULT_BUDGET)
     return value if isinstance(value, int) and value >= 0 else DEFAULT_BUDGET
@@ -262,7 +282,7 @@ def models_in(config):
 def team():
     config = read_config()
     files = agent_files()
-    return {"advising": advising(), "budget": budget(), "thinking": thinking_mode(), "advisor": files.get("advisor", {}).get("model", ""),
+    return {"advising": advising(), "budget": budget(), "thinking": thinking_mode(), "search": search_choice(), "advisor": files.get("advisor", {}).get("model", ""),
             "hypervisor": files.get("hypervisor", {}).get("model", ""),
             "subagents": config.get("agents", {}).get("general", {}).get("model", ""), "models": models_in(config)}
 
@@ -331,9 +351,13 @@ def set_agent_model(name, model):
 
 
 def team_set(role, value):
-    if role in ("advising", "budget", "thinking"):
+    if role in ("advising", "budget", "thinking", "search"):
         settings = team_settings()
-        if role == "thinking":
+        if role == "search":
+            if value not in SEARCH_CHOICES:
+                raise RuntimeError("use exa, 9router or both")
+            settings["search"] = value
+        elif role == "thinking":
             if value not in THINKING_MODES:
                 raise RuntimeError("use auto, off, think or deep")
             settings["thinking"] = value
@@ -431,7 +455,10 @@ def busy():
 def rules_for(mode, agent):
     if mode == "off":
         return TOOLS_OFF
-    return PLAN_ON if agent == "plan" else MAIN_ON
+    rules = PLAN_ON if agent == "plan" else MAIN_ON
+    if search_choice() == "9router":  # The web comes from web-search, through 9router, not from Exa's websearch
+        rules = rules + [{"action": "websearch", "resource": "*", "effect": "deny"}]
+    return rules
 JOURNALS = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "opencode-tab")
 START_TIMEOUT = 45  # seconds to wait for the server
 EVENT_TIMEOUT = 180  # seconds of silence on the event stream, heartbeats included
@@ -1093,7 +1120,7 @@ def run_turn(model, session, mode, agent, folder, text, regen=0, plain_ok=True):
                 spent[data.get("sessionID")] = blank(data.get("agent", "") or "subagent", "")
                 if data.get("agent") == "research" and mode == "tools" and not plain:
                     try:  # its own rules, so it has the docs and web search tools the main chat goes without
-                        api.call("PATCH", f"/api/session/{data.get('sessionID')}", {"permissions": TOOLS_ON}, timeout=5)
+                        api.call("PATCH", f"/api/session/{data.get('sessionID')}", {"permissions": research_rules()}, timeout=5)
                     except (OSError, http.client.HTTPException):
                         pass
                 emit({"type": "agent", "id": data.get("sessionID"), "name": data.get("agent", ""),
