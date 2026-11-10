@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Starts, stops and reports the local 9router (decolua/9router, built in ~/dev/ext/9router).
 #   9router-ctl start | stop | status    prints {"running":…,"pid":…,"url":…} as JSON
+#   9router-ctl usage                    today's requests and tokens by provider, and which token savers are on
 # It listens on 127.0.0.1 only and runs until stopped or logout; nothing starts it on boot.
 set -uo pipefail
 
@@ -54,9 +55,30 @@ stop() {
     status
 }
 
+# Read from 9router's own database; works whether or not it's running
+usage() {
+    local db="$HOME/.9router/db/data.sqlite"
+    [[ -r "$db" ]] || { echo '{"error":"no 9router database yet"}'; return 1; }
+    local today settings rtk_hits
+    today=$(sqlite3 -readonly "$db" "select data from usageDaily where dateKey = '$(date +%F)';" 2>/dev/null)
+    settings=$(sqlite3 -readonly "$db" "select data from settings limit 1;" 2>/dev/null)
+    # RTK logs only how many tool results it shrank ("RTK:3"), in this run's log
+    rtk_hits=$(grep -o 'RTK:[0-9]*' "$LOG" 2>/dev/null | cut -d: -f2 | paste -sd+ | bc 2>/dev/null)
+    jq -n --argjson today "${today:-null}" --argjson settings "${settings:-{\}}" --argjson rtk "${rtk_hits:-0}" '{
+        today: ($today // {requests: 0, promptTokens: 0, completionTokens: 0, byProvider: {}}),
+        savers: {
+            rtk: ($settings.rtkEnabled // true), caveman: ($settings.cavemanEnabled // false),
+            ponytail: ($settings.ponytailEnabled // false), headroom: ($settings.headroomEnabled // false),
+            pxpipe: ($settings.pxpipeEnabled // false)
+        },
+        rtkHits: $rtk
+    }'
+}
+
 case "${1:-status}" in
     start) start ;;
     stop) stop ;;
     status) status ;;
-    *) echo "usage: 9router-ctl start|stop|status" >&2; exit 2 ;;
+    usage) usage ;;
+    *) echo "usage: 9router-ctl start|stop|status|usage" >&2; exit 2 ;;
 esac

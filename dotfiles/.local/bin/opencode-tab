@@ -17,10 +17,13 @@
   opencode-tab allow CHAT SESSION REQUEST TOOL   answer once, and stop asking about TOOL in this chat
   opencode-tab busy                        exit 0 while any turn is running, from the tab or not
   opencode-tab team                        print the advisor and subagent models as JSON
-  opencode-tab team-set ROLE VALUE         ROLE advisor or subagents takes a model, advising takes on or off
+  opencode-tab team-set ROLE VALUE         ROLE advisor or subagents takes a model, advising takes on or off,
+                                           budget takes the tokens a turn may use before a warning, 0 for none,
+                                           hypervisor takes a model like advisor
   opencode-tab memory                      list the facts every new chat starts with as JSON
   opencode-tab memory-add FACT             keep a fact for new chats, refusing anything like a secret
   opencode-tab memory-forget NUMBER        drop a fact by its number in the list
+  opencode-tab usage SESSION               tokens a chat used, by agent and model, as JSON
 
 MODEL is provider/model. SESSION may be empty, which starts a new session. MODE is
 tools, where everything but project reads waits for an answer, or off. AGENT is build
@@ -83,9 +86,24 @@ CONFIG = os.path.expanduser("~/.config/opencode/opencode.json")
 TEAM = os.path.expanduser("~/.config/opencode/team.json")
 # OpenCode's instructions setting didn't reach the model, so this rides on each message.
 # messages() takes it off again, so /resume shows what you typed.
-ADVISOR_NOTE = ("\n\n[Team rule: before a plan of more than a few steps, a risky or hard to undo change, or after two "
-                "failed attempts, call the advisor subagent first with the goal, what you know and your plan. Follow its "
-                "advice unless you have a clear reason not to. Don't call it for simple tasks.]")
+# The main chat runs on a light, fast model, so anything complex goes to the stronger advisor first.
+ADVISOR_NOTE = ("\n\n[Team rule: you are a fast model for everyday work. Call the advisor subagent first, with the goal, "
+                "what you know and your plan, when the task needs design or architecture decisions, changes across several "
+                "files, a plan of more than a few steps, a risky or hard to undo change, a bug whose cause you can't see, or "
+                "after one failed attempt. Follow its advice unless you have a clear reason not to. If the advisor says to "
+                "escalate, or a decision is hard to undo and the advisor is unsure, call the hypervisor subagent with the goal, "
+                "the options and the advisor's view, and follow its decision. Answer simple questions and small edits "
+                "yourself, without calling either.]")
+# Older wordings, still at the end of messages in past chats, so /resume can take them off too
+OLD_ADVISOR_NOTES = (
+    "\n\n[Team rule: you are a fast model for everyday work. Call the advisor subagent first, with the goal, "
+    "what you know and your plan, when the task needs design or architecture decisions, changes across several "
+    "files, a plan of more than a few steps, a risky or hard to undo change, a bug whose cause you can't see, or "
+    "after one failed attempt. Follow its advice unless you have a clear reason not to. Answer simple questions "
+    "and small edits yourself, without calling it.]",
+"\n\n[Team rule: before a plan of more than a few steps, a risky or hard to undo change, or after two "
+                     "failed attempts, call the advisor subagent first with the goal, what you know and your plan. Follow its "
+                     "advice unless you have a clear reason not to. Don't call it for simple tasks.]",)
 MEMORY = os.path.expanduser("~/.agents/memory.md")
 MEMORY_LIMIT = 50  # facts; all of them go to the model in every new chat
 FACT_LIMIT = 300
@@ -153,6 +171,22 @@ def agent_new(name, description, model, prompt):
     return {"name": name}
 
 
+DEFAULT_BUDGET = 300000  # tokens a turn may process before the tab warns, cache reads included
+
+
+def team_settings():
+    try:
+        with open(TEAM, encoding="utf-8") as file:
+            return json.load(file)
+    except (OSError, ValueError):
+        return {}
+
+
+def budget():
+    value = team_settings().get("budget", DEFAULT_BUDGET)
+    return value if isinstance(value, int) and value >= 0 else DEFAULT_BUDGET
+
+
 def advising():
     try:
         with open(TEAM, encoding="utf-8") as file:
@@ -174,7 +208,9 @@ def models_in(config):
 
 def team():
     config = read_config()
-    return {"advising": advising(), "advisor": agent_files().get("advisor", {}).get("model", ""),
+    files = agent_files()
+    return {"advising": advising(), "budget": budget(), "advisor": files.get("advisor", {}).get("model", ""),
+            "hypervisor": files.get("hypervisor", {}).get("model", ""),
             "subagents": config.get("agent", {}).get("general", {}).get("model", ""), "models": models_in(config)}
 
 
@@ -236,20 +272,29 @@ def set_agent_model(name, model):
 
 
 def team_set(role, value):
-    if role == "advising":
-        if value not in ("on", "off"):
-            raise RuntimeError("use on or off")
+    if role in ("advising", "budget"):
+        settings = team_settings()
+        if role == "advising":
+            if value not in ("on", "off"):
+                raise RuntimeError("use on or off")
+            settings["advisor"] = value == "on"
+        else:
+            if not value.isdigit() or int(value) > 100_000_000:
+                raise RuntimeError("give the tokens as a whole number, 0 for no warning")
+            settings["budget"] = int(value)
         with open(TEAM, "w", encoding="utf-8") as file:
-            json.dump({"advisor": value == "on"}, file)
+            json.dump(settings, file)
         return team()
     config = read_config()
-    if role not in ("advisor", "subagents") or value not in [item["id"] for item in models_in(config)]:
+    if role not in ("advisor", "hypervisor", "subagents") or value not in [item["id"] for item in models_in(config)]:
         raise RuntimeError("pick one of the models in the list")
-    if role == "advisor":
-        set_agent_model("advisor", value)
+    if role in ("advisor", "hypervisor"):
+        if role not in agent_files():
+            raise RuntimeError(f"there is no {role} agent file")
+        set_agent_model(role, value)
         return team()
     for name, fields in agent_files().items():
-        if name != "advisor" and fields.get("mode") == "subagent":
+        if name not in ("advisor", "hypervisor") and fields.get("mode") == "subagent":  # they keep their own chains
             set_agent_model(name, value)
     for name in ("general", "explore"):
         config.setdefault("agent", {}).setdefault(name, {})["model"] = value
@@ -343,6 +388,10 @@ def keyring_env():
                             capture_output=True, text=True).stdout.strip()
     if github:  # Its own read-only token, not the gh login, which can administer organisations
         env["GITHUB_MCP_TOKEN"] = github
+    router = subprocess.run(["secret-tool", "lookup", "application", "9router", "kind", "api"],
+                            capture_output=True, text=True).stdout.strip()
+    if router:  # The local 9router's own key, for the 9router provider in opencode.json
+        env["NINEROUTER_API_KEY"] = router
     return env
 
 
@@ -523,6 +572,59 @@ def journal_path(session):
     return os.path.join(JOURNALS, f"{session}.jsonl")
 
 
+def usage_path(session):
+    return os.path.join(JOURNALS, f"usage-{session}.jsonl")
+
+
+def usage_add(session, record):
+    os.makedirs(JOURNALS, mode=0o700, exist_ok=True)
+    with open(usage_path(session), "a", encoding="utf-8") as file:
+        file.write(json.dumps(record) + "\n")
+
+
+def processed(entry):
+    """Every token a step handled: what was sent, cached or not, and what came back."""
+    return entry["input"] + entry["cache"] + entry["output"] + entry["reasoning"]
+
+
+def usage(session):
+    """The chat's tokens by agent and model, summed over the turns the tab recorded."""
+    if not SESSION_ID.fullmatch(session):
+        raise RuntimeError("that isn't a session")
+    totals, turns, context = {}, 0, None
+    try:
+        with open(usage_path(session), encoding="utf-8") as file:
+            records = [json.loads(line) for line in file if line.strip()]
+    except FileNotFoundError:
+        records = []
+    for record in records:
+        turns += 1
+        context = record.get("context") or context
+        for entry in record.get("agents", []):
+            key = (entry["agent"], entry["model"])
+            total = totals.setdefault(key, {"agent": entry["agent"], "model": entry["model"], "steps": 0,
+                                            "input": 0, "cache": 0, "output": 0, "reasoning": 0})
+            for field in ("steps", "input", "cache", "output", "reasoning"):
+                total[field] += entry.get(field, 0)
+    agents = sorted(totals.values(), key=processed, reverse=True)
+    return {"turns": turns, "agents": agents, "total": sum(processed(entry) for entry in agents),
+            "context": context, "budget": budget()}
+
+
+def model_limit(api, model):
+    """The model's context size from OpenCode's list, or None."""
+    provider, _, name = model.partition("/")
+    try:
+        status, reply = api.call("GET", "/api/model", timeout=10)
+        listed = reply.get("data", reply) if isinstance(reply, dict) else reply
+        for item in listed if status == 200 else []:
+            if item.get("providerID") == provider and item.get("modelID") == name:
+                return (item.get("limit") or {}).get("context")
+    except (OSError, ValueError, AttributeError, http.client.HTTPException):
+        pass
+    return None
+
+
 def journal_add(session, tool, entries):
     """OpenCode keeps no patch for the write tool, only the permission request has it."""
     os.makedirs(JOURNALS, mode=0o700, exist_ok=True)
@@ -596,6 +698,38 @@ def run_turn(model, session, mode, agent, folder, text):
     tools = {}
     asked_files = {}
     family = set()  # this turn's session and every subagent session under it
+    spent = {}  # tokens by session in this turn: agent, model, steps and token counts
+    turn = {"prompt": 0, "warned": False, "limit": None}
+
+    def blank(agent, used_model):
+        return {"agent": agent, "model": used_model, "steps": 0, "input": 0, "cache": 0, "output": 0, "reasoning": 0}
+
+    def count(session_id, tokens):
+        entry = spent.setdefault(session_id, blank("subagent", ""))
+        entry["steps"] += 1
+        entry["input"] += tokens.get("input", 0) or 0
+        entry["cache"] += (tokens.get("cache") or {}).get("read", 0) or 0
+        entry["output"] += tokens.get("output", 0) or 0
+        entry["reasoning"] += tokens.get("reasoning", 0) or 0
+        if session_id == active.get("id"):  # what the next step sends, roughly: this prompt and its answer
+            turn["prompt"] = ((tokens.get("input", 0) or 0) + ((tokens.get("cache") or {}).get("read", 0) or 0)
+                              + (tokens.get("output", 0) or 0))
+        total = sum(processed(entry) for entry in spent.values())
+        limit = budget()
+        if limit and total > limit and not turn["warned"]:
+            turn["warned"] = True
+            emit({"type": "budget", "total": total, "budget": limit})
+
+    def turn_usage():
+        if turn["limit"] is None and "api" in active:  # a server that just started may not have listed its models yet
+            turn["limit"] = model_limit(active["api"], model)
+        record = {"agents": [entry for entry in spent.values() if entry["steps"] > 0],
+                  "context": {"used": turn["prompt"], "limit": turn["limit"]} if turn["prompt"] else None}
+        emit({"type": "turn_usage", **record})
+        try:
+            usage_add(active["id"], record)
+        except OSError:
+            pass
 
     def stop(*_):
         # The shell's stop button. The turn must end on the server too.
@@ -617,6 +751,8 @@ def run_turn(model, session, mode, agent, folder, text):
         family.add(sid)
         active.update(api=api, id=sid)
         emit({"type": "session", "id": sid})
+        spent[sid] = blank(agent, model)
+        turn["limit"] = model_limit(api, model)
 
         note = ADVISOR_NOTE if mode == "tools" and advising() else ""
         if not session:  # A chat keeps what it started with, so only a new one needs it
@@ -640,14 +776,18 @@ def run_turn(model, session, mode, agent, folder, text):
                     raise RuntimeError(f"could not send the message ({status})")
             elif kind == "session.created" and data.get("parentID") in family:
                 family.add(data.get("sessionID"))
+                spent[data.get("sessionID")] = blank(data.get("agent", "") or "subagent", "")
                 emit({"type": "agent", "id": data.get("sessionID"), "name": data.get("agent", ""),
                       "task": data.get("title", ""), "state": "running"})
             elif data.get("sessionID") not in family:
                 continue
             elif data.get("sessionID") != sid and kind == "session.step.started":
-                emit({"type": "agent", "id": data["sessionID"], "model": (data.get("model") or {}).get("id", "")})
+                child_model = (data.get("model") or {}).get("id", "")
+                spent.setdefault(data["sessionID"], blank("subagent", ""))["model"] = child_model
+                emit({"type": "agent", "id": data["sessionID"], "model": child_model})
             elif data.get("sessionID") != sid and kind == "session.usage.updated":
                 tokens = data.get("tokens") or {}
+                count(data["sessionID"], tokens)
                 emit({"type": "agent", "id": data["sessionID"], "tokens": tokens.get("input", 0) + tokens.get("output", 0)})
             elif data.get("sessionID") != sid and kind in TERMINAL:
                 emit({"type": "agent", "id": data["sessionID"],
@@ -659,6 +799,7 @@ def run_turn(model, session, mode, agent, folder, text):
             elif kind == "session.reasoning.delta":
                 emit({"type": "reasoning", "delta": data.get("delta", "")})
             elif kind == "session.usage.updated":
+                count(sid, data.get("tokens") or {})
                 emit({"type": "usage", "tokens": data.get("tokens", {})})
             elif kind == "permission.asked":
                 owner = data.get("sessionID")
@@ -706,6 +847,7 @@ def run_turn(model, session, mode, agent, folder, text):
                     timer.cancel()
                 family.discard(sid)
                 interrupt_all()  # a background subagent must not outlive the turn
+                turn_usage()  # before the end, which the tab treats as the last event
                 emit({"type": kind.rsplit(".", 1)[1], "error": (data.get("error") or {}).get("message")})
                 return 0
         raise RuntimeError("the event stream ended early")
@@ -764,7 +906,10 @@ def messages(session):
     result = []
     for item in found:
         if item.get("type") == "user":
-            text = item.get("text", "").removesuffix(ADVISOR_NOTE).removesuffix(MEMORY_RULE)
+            text = item.get("text", "")
+            for note in (ADVISOR_NOTE, *OLD_ADVISOR_NOTES):
+                text = text.removesuffix(note)
+            text = text.removesuffix(MEMORY_RULE)
             result.append({"role": "user", "text": MEMORY_NOTE.sub("", text)})
         elif item.get("type") == "assistant":
             text = "".join(part.get("text", "") for part in item.get("content", []) if part.get("type") == "text")
@@ -863,8 +1008,8 @@ def main():
         return reply(*args[1:])
     if args == ["sessions"]:
         return report(sessions)
-    if len(args) == 2 and args[0] in ("messages", "diff", "undo"):
-        return report({"messages": messages, "diff": diff, "undo": undo}[args[0]], args[1])
+    if len(args) == 2 and args[0] in ("messages", "diff", "undo", "usage"):
+        return report({"messages": messages, "diff": diff, "undo": undo, "usage": usage}[args[0]], args[1])
     if args == ["agents"]:
         return report(agents)
     if len(args) == 5 and args[0] == "agent-new":

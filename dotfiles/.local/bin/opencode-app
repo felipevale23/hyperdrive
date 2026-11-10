@@ -24,7 +24,9 @@ KEYS=$(secret-tool lookup application illogical-impulse)
 NVIDIA_API_KEY=$(printf %s "$KEYS" | jq -r '.apiKeys.nvidia // empty')
 GEMINI_API_KEY=$(printf %s "$KEYS" | jq -r '.apiKeys.gemini // empty')
 unset KEYS
-export NVIDIA_API_KEY GEMINI_API_KEY
+# The local 9router's own key, for the 9router provider in opencode.json
+NINEROUTER_API_KEY=$(secret-tool lookup application 9router kind api 2>/dev/null)
+export NVIDIA_API_KEY GEMINI_API_KEY NINEROUTER_API_KEY
 
 cd "$FOLDER"
 stop_server  # one started elsewhere wouldn't have the keys
