@@ -133,49 +133,9 @@
                      }
                  }
  
---- a/modules/ii/sidebarLeft/SidebarLeftContent.qml
-+++ b/modules/ii/sidebarLeft/SidebarLeftContent.qml
-@@ -1,6 +1,7 @@
- import qs.services
- import qs.modules.common
- import qs.modules.common.widgets
-+import qs.modules.ii.sidebarLeft.aiChat
- import QtQuick
- import QtQuick.Controls
- import QtQuick.Layouts
-@@ -18,6 +19,7 @@
-     property bool animeCloset: Config.options.policies.weeb === 2
-     property var tabButtonList: [
-         ...(root.aiChatEnabled ? [{"icon": "neurology", "iconComponent": cortexIcon, "name": Translation.tr("Intelligence")}] : []),
-+        ...(root.aiChatEnabled ? [{"icon": "router", "name": Translation.tr("9router")}] : []),
-         ...(root.translatorEnabled ? [{"icon": "translate", "name": Translation.tr("Translator")}] : []),
-         ...((root.animeEnabled && !root.animeCloset) ? [{"icon": "bookmark_heart", "name": Translation.tr("Anime")}] : [])
-     ]
-@@ -93,6 +95,7 @@
- 
-                 contentChildren: [
-                     ...(root.aiChatEnabled ? [aiChat.createObject()] : []),
-+                    ...(root.aiChatEnabled ? [routerTab.createObject()] : []),
-                     ...(root.translatorEnabled ? [translator.createObject()] : []),
-                     ...((root.tabButtonList.length === 0 || (!root.aiChatEnabled && !root.translatorEnabled && root.animeCloset)) ? [placeholder.createObject()] : []),
-                     ...(root.animeEnabled ? [anime.createObject()] : []),
-@@ -105,6 +108,13 @@
-             AiChat {}
-         }
-         Component {
-+            id: routerTab
-+            RouterPanel {
-+                shown: SwipeView.isCurrentItem // Refreshes when you switch to the tab
-+                showClose: false
-+            }
-+        }
-+        Component {
-             id: translator
-             Translator {}
-         }
 --- /dev/null
 +++ b/services/NineRouter.qml
-@@ -0,0 +1,58 @@
+@@ -0,0 +1,98 @@
 +pragma Singleton
 +pragma ComponentBehavior: Bound
 +
@@ -198,6 +158,20 @@
 +    property string action: ""
 +    signal finished(bool report) // After each run, once the state above is updated
 +
++    // Headroom, the context-compressing proxy 9router calls (9router-ctl headroom ...)
++    property bool headroomRunning: false
++    property bool headroomBusy: false
++    property string headroomVersion: ""
++    property string headroomError: ""
++    property string headroomAction: ""
++    function runHeadroom(what) {
++        if (headroomProc.running) return;
++        root.headroomAction = what;
++        root.headroomBusy = what !== "status";
++        headroomProc.command = [`${Quickshell.env("HOME")}/.local/bin/9router-ctl`, "headroom", what];
++        headroomProc.running = true;
++    }
++
 +    function run(what, reportIt) {
 +        if (routerProc.running) return;
 +        root.action = what;
@@ -205,6 +179,32 @@
 +        root.busy = what !== "status";
 +        routerProc.command = [`${Quickshell.env("HOME")}/.local/bin/9router-ctl`, what];
 +        routerProc.running = true;
++    }
++
++    Process {
++        id: headroomProc
++        stdout: StdioCollector {
++            id: headroomOut
++            onStreamFinished: {
++                let state = {};
++                try {
++                    state = JSON.parse(headroomOut.text);
++                } catch (e) {
++                    state = { "running": false, "error": Translation.tr("9router-ctl gave no answer") };
++                }
++                root.headroomRunning = state.running === true;
++                root.headroomVersion = state.version ?? "";
++                root.headroomError = state.error ?? "";
++                root.headroomBusy = false;
++            }
++        }
++        onExited: (exitCode, exitStatus) => {
++            if (exitCode !== 0 && headroomOut.text.length === 0) {
++                root.headroomBusy = false;
++                root.headroomRunning = false;
++                root.headroomError = Translation.tr("9router-ctl failed (exit %1)").arg(exitCode);
++            }
++        }
 +    }
 +
 +    Process {
@@ -236,7 +236,7 @@
 +}
 --- /dev/null
 +++ b/modules/ii/sidebarLeft/aiChat/RouterPanel.qml
-@@ -0,0 +1,219 @@
+@@ -0,0 +1,268 @@
 +import qs.modules.common
 +import qs.modules.common.widgets
 +import qs.services
@@ -259,6 +259,7 @@
 +    onShownChanged: {
 +        if (!shown) return;
 +        root.router.run("status", false);
++        root.router.runHeadroom("status");
 +        Ai.refreshRouterUsage();
 +    }
 +
@@ -419,6 +420,54 @@
 +                    onClicked: {
 +                        Ai.showQuotaTracker();
 +                        root.shown = false;
++                    }
++                }
++            }
++
++            Rectangle { // Headroom: compresses long tool results and context before they are sent
++                Layout.fillWidth: true
++                implicitHeight: headroomRow.implicitHeight + 16
++                radius: Appearance.rounding.small
++                color: Appearance.colors.colLayer2
++                RowLayout {
++                    id: headroomRow
++                    anchors {
++                        left: parent.left
++                        right: parent.right
++                        verticalCenter: parent.verticalCenter
++                        margins: 10
++                    }
++                    spacing: 10
++                    ColumnLayout {
++                        Layout.fillWidth: true
++                        spacing: 0
++                        StyledText {
++                            color: Appearance.colors.colOnLayer1
++                            text: root.router.headroomBusy ? (root.router.headroomAction === "stop" ? Translation.tr("Headroom: stopping…") : Translation.tr("Headroom: starting…"))
++                                : root.router.headroomRunning ? Translation.tr("Headroom: on") : Translation.tr("Headroom: off")
++                        }
++                        StyledText {
++                            Layout.fillWidth: true
++                            wrapMode: Text.Wrap
++                            textFormat: Text.PlainText
++                            font.pixelSize: Appearance.font.pixelSize.smaller
++                            color: root.router.headroomError.length > 0 ? Appearance.colors.colError : Appearance.colors.colOnSurfaceVariant
++                            text: root.router.headroomError.length > 0 ? root.router.headroomError
++                                : root.router.headroomRunning ? Translation.tr("Compresses long tool results and context before 9router sends them (version %1)").arg(root.router.headroomVersion)
++                                : Translation.tr("Stopped. 9router sends requests uncompressed and logs a skipped line each time")
++                        }
++                    }
++                    StyledSwitch {
++                        id: headroomSwitch
++                        enabled: !root.router.headroomBusy && root.router.headroomError.indexOf("not installed") < 0
++                        checked: root.router.headroomRunning
++                        onClicked: {
++                            root.router.runHeadroom(checked ? "start" : "stop");
++                            checked = Qt.binding(() => root.router.headroomRunning); // Follows the real state, not the click
++                        }
++                        StyledToolTip {
++                            text: headroomSwitch.checked ? Translation.tr("Click to stop Headroom") : Translation.tr("Click to start Headroom")
++                        }
 +                    }
 +                }
 +            }

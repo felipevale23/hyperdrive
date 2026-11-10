@@ -131,11 +131,61 @@ print(json.dumps({"connections": rows}))
 PY
 }
 
+# Headroom: the context-compressing proxy 9router calls. Installed in a venv, run on 127.0.0.1:8787.
+#   9router-ctl headroom start | stop | status    prints {"running":…,"version":…} as JSON
+HEADROOM_DIR="$HOME/.local/share/headroom"
+HEADROOM_PORT=8787
+
+headroom_pid() {
+    local pid
+    pid=$(ss -ltnpH "sport = :$HEADROOM_PORT" 2>/dev/null | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
+    [[ -n "$pid" ]] && tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q headroom && echo "$pid"
+}
+
+headroom_status() {
+    local pid health
+    pid=$(headroom_pid)
+    if [[ -n "$pid" ]]; then
+        health=$(curl -s -m 2 "http://127.0.0.1:$HEADROOM_PORT/health" 2>/dev/null)
+        jq -n --argjson pid "$pid" --argjson health "${health:-null}" '{running: true, pid: $pid, version: ($health.version // null), ready: ($health.ready // false)}'
+    elif [[ ! -x "$HEADROOM_DIR/venv/bin/headroom" ]]; then
+        echo '{"running":false,"error":"headroom is not installed in ~/.local/share/headroom/venv"}'
+    elif ss -ltnH "sport = :$HEADROOM_PORT" 2>/dev/null | grep -q .; then
+        echo "{\"running\":false,\"error\":\"port $HEADROOM_PORT is used by another program\"}"
+    else
+        echo '{"running":false}'
+    fi
+}
+
+headroom_start() {
+    [[ -z "$(headroom_pid)" && -x "$HEADROOM_DIR/venv/bin/headroom" ]] || { headroom_status; return; }
+    (
+        cd "$HEADROOM_DIR" || exit 1
+        HEADROOM_TELEMETRY=off setsid "$HEADROOM_DIR/venv/bin/headroom" proxy --host 127.0.0.1 --port "$HEADROOM_PORT" --no-telemetry \
+            >>"$HEADROOM_DIR/proxy.log" 2>&1 </dev/null &
+    )
+    for _ in $(seq 1 40); do
+        curl -s -m 1 -o /dev/null "http://127.0.0.1:$HEADROOM_PORT/health" && break
+        sleep 0.5
+    done
+    headroom_status
+}
+
+headroom_stop() {
+    local pid; pid=$(headroom_pid)
+    if [[ -n "$pid" ]]; then
+        kill "$pid"
+        for _ in $(seq 1 20); do [[ -z "$(headroom_pid)" ]] && break; sleep 0.25; done
+    fi
+    headroom_status
+}
+
 case "${1:-status}" in
     start) start ;;
     stop) stop ;;
     status) status ;;
     usage) usage ;;
     quota) quota ;;
-    *) echo "usage: 9router-ctl start|stop|status|usage|quota" >&2; exit 2 ;;
+    headroom) case "${2:-status}" in start) headroom_start ;; stop) headroom_stop ;; status) headroom_status ;; *) echo "usage: 9router-ctl headroom start|stop|status" >&2; exit 2 ;; esac ;;
+    *) echo "usage: 9router-ctl start|stop|status|usage|quota|headroom" >&2; exit 2 ;;
 esac
