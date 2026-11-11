@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Creates a ~5 s video from a text prompt with Wan 2.1 (1.3B) on a Google Colab GPU.
+#
+#   gen-video "PROMPT" OUTPUT.mp4 [GPU]
+#
+# GPU is L4 (default), T4, A100 or H100. Uses Colab compute units while it runs.
+# Returns at once: the job runs in the background (about 5-10 min), sends a desktop
+# notification when done, and always releases the Colab VM. An existing file is never replaced.
+set -euo pipefail
+COLAB=~/.local/bin/colab
+REMOTE=~/.local/share/gen-video/wan_t2v.py
+STATE=~/.local/state/gen-video
+
+if [[ ${1:-} == --worker ]]; then
+  shift; prompt=$1 out=$2 gpu=$3 session=$4
+  trap '"$COLAB" stop -s "$session" >/dev/null 2>&1 || true' EXIT
+  ok=0
+  "$COLAB" new -s "$session" --gpu "$gpu" &&
+  "$COLAB" install -s "$session" diffusers transformers accelerate ftfy imageio imageio-ffmpeg &&
+  "$COLAB" exec -s "$session" --timeout 0 --env "PROMPT=$prompt" --env "OUT=/content/out.mp4" -f "$REMOTE" &&
+  "$COLAB" download -s "$session" /content/out.mp4 "$out" && [[ -s $out ]] && ok=1
+  if (( ok )); then echo "DONE $out"; notify-send -a gen-video "Video ready" "$out" || true
+  else echo "FAILED"; notify-send -u critical -a gen-video "Video failed" "See $STATE/$session.log" || true; fi
+  exit 0
+fi
+
+if [[ $# -lt 2 ]]; then echo 'usage: gen-video "PROMPT" OUTPUT.mp4 [L4|T4|A100|H100]' >&2; exit 2; fi
+prompt=$1 out=$(realpath -m "$2") gpu=${3:-L4}
+[[ $out == *.mp4 ]] || out="$out.mp4"
+if [[ -e $out ]]; then echo "error: $out already exists" >&2; exit 1; fi
+[[ -x $COLAB ]] || { echo "error: colab CLI not found at $COLAB" >&2; exit 1; }
+mkdir -p "$STATE" "$(dirname "$out")"
+session="gv-$(date +%Y%m%d-%H%M%S)"
+setsid nohup "$0" --worker "$prompt" "$out" "$gpu" "$session" >"$STATE/$session.log" 2>&1 < /dev/null &
+echo "started: $out will appear in about 5-10 minutes (log: $STATE/$session.log)"
