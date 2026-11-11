@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# Transcribes speech in an audio or video file with Whisper large-v3-turbo on a Google Colab GPU.
+#
+#   gen-transcript [--srt] [--lang CODE] [--gpu T4|L4|A100|H100] [--wait] INPUT [OUTPUT_BASE]
+#
+# Writes OUTPUT_BASE.txt (default: next to INPUT, same name), and OUTPUT_BASE.srt subtitles with --srt.
+# --lang sets the spoken language (pt, en, es...); without it Whisper detects it.
+# The audio is converted locally to 16 kHz mono first, so only a small file is uploaded.
+# Without --wait it returns at once, runs in the background and sends a desktop notification.
+# Uses Colab compute units while it runs and always releases the VM. Existing files are never replaced.
+set -euo pipefail
+COLAB=~/.local/bin/colab
+REMOTE=~/.local/share/gen-transcript/whisper_run.py
+STATE=~/.local/state/gen-transcript
+usage='usage: gen-transcript [--srt] [--lang CODE] [--gpu T4|L4|A100|H100] [--wait] INPUT [OUTPUT_BASE]'
+
+if [[ ${1:-} == --worker ]]; then
+  shift; audio=$1 base=$2 gpu=$3 session=$4 lang=$5 srt=$6
+  trap '"$COLAB" stop -s "$session" >/dev/null 2>&1 || true; rm -f "$audio"' EXIT
+  ok=0
+  "$COLAB" new -s "$session" --gpu "$gpu" &&
+  "$COLAB" upload -s "$session" "$audio" /content/in.flac &&
+  "$COLAB" exec -s "$session" --timeout 0 --env HF_HUB_DISABLE_IMPLICIT_TOKEN=1 --env "IN=/content/in.flac" --env "OUT=/content/out" \
+    --env "LANG_CODE=$lang" -f "$REMOTE" &&
+  "$COLAB" download -s "$session" /content/out.txt "$base.txt" && [[ -s $base.txt ]] && ok=1 || true
+  if (( ok && srt )); then "$COLAB" download -s "$session" /content/out.srt "$base.srt" || true; fi
+  if (( ok )); then
+    echo "DONE $base.txt$( (( srt )) && echo " $base.srt")"
+    notify-send -a gen-transcript "Transcript ready" "$base.txt" || true
+  else echo "FAILED"; notify-send -u critical -a gen-transcript "Transcript failed" "See $STATE/$session.log" || true; fi
+  exit 0
+fi
+
+srt=0 lang="" gpu=T4 wait=0 args=()
+while (( $# )); do
+  case $1 in
+    --srt) srt=1 ;;
+    --lang) lang=${2:?$usage}; shift ;;
+    --gpu) gpu=${2:?$usage}; shift ;;
+    --wait) wait=1 ;;
+    -h|--help) echo "$usage"; exit 0 ;;
+    *) args+=("$1") ;;
+  esac
+  shift
+done
+if (( ${#args[@]} < 1 || ${#args[@]} > 2 )); then echo "$usage" >&2; exit 2; fi
+gpu=${gpu^^}
+[[ $gpu =~ ^(L4|T4|A100|H100)$ ]] || { echo "error: unknown GPU $gpu" >&2; exit 2; }
+[[ -z $lang || $lang =~ ^[a-z]{2,3}$ ]] || { echo "error: --lang takes a code like pt or en" >&2; exit 2; }
+input=$(realpath -e "${args[0]}") || { echo "error: ${args[0]} not found" >&2; exit 1; }
+base=$(realpath -m "${args[1]:-${input%.*}}"); base=${base%.txt}; base=${base%.srt}
+for f in "$base.txt" $( (( srt )) && echo "$base.srt"); do
+  [[ -e $f ]] && { echo "error: $f already exists" >&2; exit 1; }
+done
+[[ -x $COLAB ]] || { echo "error: colab CLI not found at $COLAB" >&2; exit 1; }
+mkdir -p "$STATE" "$(dirname "$base")"
+session="gt-$(date +%Y%m%d-%H%M%S)"
+audio="$STATE/$session.flac"
+ffmpeg -v error -nostdin -i "$input" -vn -ac 1 -ar 16000 -c:a flac "$audio" ||
+  { rm -f "$audio"; echo "error: no audio could be read from $input" >&2; exit 1; }
+if (( wait )); then
+  "$0" --worker "$audio" "$base" "$gpu" "$session" "$lang" "$srt" 2>&1 | tee "$STATE/$session.log" | grep -E '^(DONE|FAILED)|loaded|done in|Error'
+  exit 0
+fi
+setsid nohup "$0" --worker "$audio" "$base" "$gpu" "$session" "$lang" "$srt" >"$STATE/$session.log" 2>&1 < /dev/null &
+echo "started: $base.txt will appear in a few minutes on $gpu (log: $STATE/$session.log)"
