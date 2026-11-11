@@ -1,5 +1,6 @@
 """Runs on the Colab VM. Reads PROMPT, OUT and optional NEGATIVE/FRAMES/SEED from the environment."""
 import os, time, torch
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 from diffusers import AutoencoderKLWan, WanPipeline
 from diffusers.utils import export_to_video
 
@@ -12,7 +13,11 @@ seed = int(os.environ.get("SEED", str(int(time.time()) % 2**32)))
 t = time.time()
 model_id = "Wan-AI/Wan2.1-T2V-1.3B-Diffusers"
 vae = AutoencoderKLWan.from_pretrained(model_id, subfolder="vae", torch_dtype=torch.float32)
-pipe = WanPipeline.from_pretrained(model_id, vae=vae, torch_dtype=torch.bfloat16).to("cuda")
+pipe = WanPipeline.from_pretrained(model_id, vae=vae, torch_dtype=torch.bfloat16)
+# Keep only the active part on the GPU: the transformer leaves before the VAE decodes all frames
+pipe.enable_model_cpu_offload()
+if hasattr(pipe.vae, "enable_tiling"):
+    pipe.vae.enable_tiling()
 print(f"loaded in {time.time()-t:.0f}s", flush=True)
 
 t = time.time()
