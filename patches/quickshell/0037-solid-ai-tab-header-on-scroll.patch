@@ -1,0 +1,135 @@
+--- a/modules/ii/sidebarLeft/AiChat.qml
++++ b/modules/ii/sidebarLeft/AiChat.qml
+@@ -538,9 +538,15 @@
+                 }
+             }
+ 
+-            StyledRectangularShadow {
++            Rectangle { // Solid strip behind the status pill once scrolled, so replies don't show around it
+                 z: 1
+-                target: statusBg
++                anchors {
++                    left: parent.left
++                    right: parent.right
++                    top: parent.top
++                }
++                height: statusBg.height + 8
++                color: Appearance.colors.colLayer1Base
+                 opacity: messageListView.atYBeginning ? 0 : 1
+                 visible: opacity > 0
+                 Behavior on opacity {
+@@ -558,7 +564,7 @@
+                 implicitWidth: statusRowLayout.implicitWidth + 10 * 2
+                 implicitHeight: Math.max(statusRowLayout.implicitHeight, 38)
+                 radius: Appearance.rounding.normal - root.padding
+-                color: messageListView.atYBeginning || Ai.opencodeModel ? Appearance.colors.colLayer2 : Appearance.colors.colLayer2Base
++                color: messageListView.atYBeginning ? Appearance.colors.colLayer2 : Appearance.colors.colLayer2Base
+                 Behavior on color {
+                     animation: Appearance.animation.elementMoveFast.colorAnimation.createObject(this)
+                 }
+@@ -635,6 +641,7 @@
+                 z: 1
+                 target: messageListView
+                 vertical: true
++                fadeSize: 12 // Short: the solid strip under the header already hides what scrolls past
+             }
+ 
+             StyledListView { // Message list
+--- a/modules/ii/sidebarLeft/aiChat/MessageCodeBlock.qml
++++ b/modules/ii/sidebarLeft/aiChat/MessageCodeBlock.qml
+@@ -33,6 +33,14 @@
+     readonly property var diffSummary: isDiff ? StringUtils.diffSummary(segmentContent) : null
+     readonly property string diffCounts: diffSummary ? `+${diffSummary.added} \u2212${diffSummary.removed}` : ""
+ 
++    // The chat's message list: the code box hands it the wheel, and holds it still while text is selected
++    function outerList() {
++        let list = root.parent;
++        while (list && !(list.contentY !== undefined && list.flick !== undefined))
++            list = list.parent;
++        return list;
++    }
++
+     // Measured from the real layout, so diff rows and numbers stay right on wrapped lines
+     property var lineRows: []
+     function measureLines() {
+@@ -191,7 +199,7 @@
+                         Layout.fillWidth: true
+                         Layout.alignment: Qt.AlignRight
+                         font.family: Appearance.font.family.monospace
+-                        font.pixelSize: Appearance.font.pixelSize.small
++                        font.pixelSize: Appearance.font.pixelSize.smaller
+                         color: Appearance.colors.colOnSurfaceVariant
+                         horizontalAlignment: Text.AlignRight
+                         verticalAlignment: Text.AlignTop
+@@ -225,6 +233,14 @@
+                     contentWidth: codeTextArea.width - 1
+                     // contentHeight: codeTextArea.contentHeight
+                     clip: true
++                    // Let the mouse wheel reach the message list: otherwise a long code block
++                    // (or a reply the model put in one) swallows it and the chat stops scrolling.
++                    // Wide lines still scroll sideways with the scroll bar.
++                    Binding {
++                        target: codeScrollView.contentItem
++                        property: "interactive"
++                        value: false
++                    }
+                     ScrollBar.vertical.policy: ScrollBar.AlwaysOff
+                     
+                     ScrollBar.horizontal: ScrollBar {
+@@ -255,11 +271,22 @@
+                         id: codeTextArea
+                         Layout.fillWidth: true
+                         readOnly: !editing
+-                        selectByMouse: enableMouseSelection || editing
++                        // Code can always be selected and copied. While dragging, the chat list is
++                        // held still so it doesn't scroll away instead of selecting
++                        selectByMouse: true
++                        property var heldList: null
++                        onPressed: {
++                            heldList = root.outerList();
++                            if (heldList) heldList.interactive = false;
++                        }
++                        onReleased: {
++                            if (heldList) heldList.interactive = true;
++                            heldList = null;
++                        }
+                         renderType: Text.NativeRendering
+                         font.family: Appearance.font.family.monospace
+                         font.hintingPreference: Font.PreferNoHinting // Prevent weird bold text
+-                        font.pixelSize: Appearance.font.pixelSize.small
++                        font.pixelSize: Appearance.font.pixelSize.smaller // Smaller than chat text, like an editor
+                         selectedTextColor: Appearance.m3colors.m3onSecondaryContainer
+                         selectionColor: Appearance.colors.colSecondaryContainer
+                         // A permission card must show all of the command, not scroll it out of view
+@@ -342,6 +369,31 @@
+                 }
+             }
+ 
++            // Up/down wheel over the code scrolls the chat, not the code box: a long block (or a
++            // reply the model put in one) otherwise stops the chat from scrolling. Sideways
++            // wheel still reaches the code box for wide lines. Clicks pass through.
++            MouseArea {
++                anchors.fill: parent
++                acceptedButtons: Qt.NoButton
++                cursorShape: Qt.IBeamCursor
++                onWheel: (event) => {
++                    const dy = event.pixelDelta.y !== 0 ? event.pixelDelta.y : event.angleDelta.y / 120 * 60;
++                    if (Math.abs(event.angleDelta.x) > Math.abs(event.angleDelta.y) || dy === 0) {
++                        event.accepted = false;
++                        return;
++                    }
++                    const list = root.outerList();
++                    if (!list) {
++                        event.accepted = false;
++                        return;
++                    }
++                    const top = list.originY ?? 0;
++                    const maxY = Math.max(top, top + list.contentHeight - list.height);
++                    list.contentY = Math.max(top, Math.min(list.contentY - dy, maxY));
++                    event.accepted = true;
++                }
++            }
++
+             // MouseArea to block scrolling
+             // MouseArea {
+             //     id: codeBlockMouseArea
