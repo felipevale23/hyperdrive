@@ -17,10 +17,21 @@
   opencode-tab allow CHAT SESSION REQUEST TOOL   answer once, and stop asking about TOOL in this chat
   opencode-tab busy                        exit 0 while any turn is running, from the tab or not
   opencode-tab team                        print the advisor and subagent models as JSON
-  opencode-tab team-set ROLE VALUE         ROLE advisor or subagents takes a model, advising takes on or off
+  opencode-tab team-set ROLE VALUE         ROLE advisor or subagents takes a model, advising takes on or off,
+                                           search takes exa, 9router or both (the research agent's web search),
+                                           budget takes the tokens a turn may use before a warning, 0 for none,
+                                           hypervisor takes a model like advisor,
+                                           thinking takes auto, off, think or deep
+
+OPENCODE_TAB_REGEN=N makes send first drop the chat's last N turns, then send (regenerate an answer).
   opencode-tab memory                      list the facts every new chat starts with as JSON
   opencode-tab memory-add FACT             keep a fact for new chats, refusing anything like a secret
   opencode-tab memory-forget NUMBER        drop a fact by its number in the list
+  opencode-tab usage SESSION               tokens a chat used, by agent and model, as JSON
+  opencode-tab compact SESSION             summarize the chat so far, to free its context, and wait for it
+  opencode-tab exhausted                   models stopped for running out of quota, with when they come back, as JSON
+  opencode-tab exhausted-clear [MODEL]     let one model (or all) be tried again now
+OPENCODE_TAB_DEBUG=1 prints OpenCode's raw events to stderr, without the text, for finding out why a turn behaves.
 
 MODEL is provider/model. SESSION may be empty, which starts a new session. MODE is
 tools, where everything but project reads waits for an answer, or off. AGENT is build
@@ -38,12 +49,14 @@ which are checked before each message, and nothing is sent without them. An unan
 request is denied after PERMISSION_TIMEOUT.
 """
 import base64
+import datetime
 import ctypes
 import fcntl
 import http.client
 import json
 import os
 import re
+import shlex
 import secrets
 import signal
 import subprocess
@@ -65,8 +78,12 @@ TOOLS_OFF = [{"action": "*", "resource": "*", "effect": "deny"}]
 TOOLS_ON = [{"action": "*", "resource": "*", "effect": "ask"}] + [
     {"action": tool, "resource": "*", "effect": "deny"}
      for tool in ("execute", "question", "skill", "browser")]
+# Library docs and web search are big tool definitions sent with every message, so only the research
+# subagent has them: the main chat denies them, and the helper gives a research child TOOLS_ON when it starts.
+RESEARCH_TOOLS = ("context7_*", "exa_*")
+MAIN_ON = TOOLS_ON + [{"action": tool, "resource": "*", "effect": "deny"} for tool in RESEARCH_TOOLS]
 # The session's rules override the agent's own, so Plan has to be made read-only here.
-PLAN_ON = TOOLS_ON + [{"action": tool, "resource": "*", "effect": "deny"} for tool in ("edit", "shell")]
+PLAN_ON = MAIN_ON + [{"action": tool, "resource": "*", "effect": "deny"} for tool in ("edit", "shell")]
 AGENTS = ("build", "plan")
 BUILT_IN = {"build": ("primary", "Changes files and runs commands, asking first"),
             "plan": ("primary", "Reads and plans, can't edit files or run commands"),
@@ -83,9 +100,38 @@ CONFIG = os.path.expanduser("~/.config/opencode/opencode.json")
 TEAM = os.path.expanduser("~/.config/opencode/team.json")
 # OpenCode's instructions setting didn't reach the model, so this rides on each message.
 # messages() takes it off again, so /resume shows what you typed.
-ADVISOR_NOTE = ("\n\n[Team rule: before a plan of more than a few steps, a risky or hard to undo change, or after two "
-                "failed attempts, call the advisor subagent first with the goal, what you know and your plan. Follow its "
-                "advice unless you have a clear reason not to. Don't call it for simple tasks.]")
+# The main chat runs on a light, fast model, so anything complex goes to the stronger advisor first.
+ADVISOR_NOTE = ("\n\n[Team rule: you are a fast model for everyday work. Call the advisor subagent first, with the goal, "
+                "what you know and your plan, when the task needs design or architecture decisions, changes across several "
+                "files, a plan of more than a few steps, a risky or hard to undo change, a bug whose cause you can't see, or "
+                "after one failed attempt. Follow its advice unless you have a clear reason not to. If the advisor says to "
+                "escalate, or a decision is hard to undo and the advisor is unsure, call the hypervisor subagent with the goal, "
+                "the options and the advisor's view, and follow its decision. Answer simple questions and small edits "
+                "yourself, without calling either.]")
+# Older wordings, still at the end of messages in past chats, so /resume can take them off too
+OLD_ADVISOR_NOTES = (
+    "\n\n[Team rule: you are a fast model for everyday work. Call the advisor subagent first, with the goal, "
+    "what you know and your plan, when the task needs design or architecture decisions, changes across several "
+    "files, a plan of more than a few steps, a risky or hard to undo change, a bug whose cause you can't see, or "
+    "after one failed attempt. Follow its advice unless you have a clear reason not to. Answer simple questions "
+    "and small edits yourself, without calling it.]",
+"\n\n[Team rule: before a plan of more than a few steps, a risky or hard to undo change, or after two "
+                     "failed attempts, call the advisor subagent first with the goal, what you know and your plan. Follow its "
+                     "advice unless you have a clear reason not to. Don't call it for simple tasks.]",)
+# Plain chat goes without tool definitions, which are most of the prompt. If the message turns out to need
+# a tool, the model answers only NEEDS_TOOLS, and the turn runs again with tools. messages() takes it off.
+NEEDS_TOOLS = "NEEDS_TOOLS"
+CHAT_ONLY_NOTE = ("\n\n[This message is sent without tools. Greetings, small talk and questions you can answer from what "
+                  "you know never need tools: answer them normally. Only if answering needs reading or changing files, running "
+                  "a command, looking something up or calling an agent, reply with exactly NEEDS_TOOLS and nothing else.]")
+# Wordings already sent in past chats, for messages() to take off
+OLD_CHAT_ONLY_NOTES = ("\n\n[This message is sent without tools. If answering needs reading or changing files, running a "
+                       "command, looking something up or calling an agent, reply with exactly NEEDS_TOOLS and nothing else.]",)
+RETRY_WITH_TOOLS = object()
+# After NEEDS_TOOLS the chat goes on with this hidden follow-up, tools on. Dropping the tool-less try and asking
+# again failed on Kiro, which keeps its own copy of the conversation and answered NEEDS_TOOLS again.
+TOOLS_FOLLOW_UP = "[Tools are on now. Go ahead and answer my previous message, using them.]"
+RETRY_NOTE = "\n\n[You have your tools now. Use them to answer; never reply NEEDS_TOOLS.]"  # older retries
 MEMORY = os.path.expanduser("~/.agents/memory.md")
 MEMORY_LIMIT = 50  # facts; all of them go to the model in every new chat
 FACT_LIMIT = 300
@@ -153,6 +199,72 @@ def agent_new(name, description, model, prompt):
     return {"name": name}
 
 
+# Thinking for the main chat, as OpenCode model variants that set reasoning_effort (see opencode.json).
+# "auto" reads the prompt: plain chat gets none, questions that need reasoning get some, and an explicit
+# request to think hard, or a big design question, gets the most. English and Portuguese cues.
+THINKING_MODES = ("auto", "off", "think", "deep")
+DEEP_CUES = re.compile(r"\b(think (hard|harder|deeply|carefully|it through)|ultrathink|deep(ly)? (think|thought|dive|analysis)|"
+                       r"architecture|arquitetura|trade-?offs?|prove|proof|demonstr\w*|pense (bem|muito|profundamente|com calma)|"
+                       r"an[aá]lise profunda|racioc[ií]nio profundo)\b", re.I)
+THINK_CUES = re.compile(r"\b(think|pense|reason|why|por ?qu[eê]|explain|expli\w+|compare|compar\w+|plan|planej\w*|design|"
+                        r"debug|depur\w*|bug|error|erro|fix|corrig\w*|calculat\w*|calcul\w*|step by step|passo a passo|"
+                        r"analy[sz]\w*|analis\w*|optimi[sz]\w*|otimiz\w*|refactor\w*|refator\w*|review|revis\w*|"
+                        r"how (do|does|can|should|would)|como (fa[çz]o|funciona|posso|devo|seria))\b", re.I)
+
+
+def thinking_mode():
+    value = team_settings().get("thinking", "auto")
+    return value if value in THINKING_MODES else "auto"
+
+
+def choose_thinking(text, mode):
+    """The variant for this message and why, from the setting or the prompt."""
+    if mode != "auto":
+        return mode, "set with /think"
+    words = len(text.split())
+    if DEEP_CUES.search(text) or words > 400:
+        return "deep", "asked to think hard" if DEEP_CUES.search(text) else "a long request"
+    if THINK_CUES.search(text) or "```" in text or words > 120:
+        return "think", "a question that needs reasoning" if THINK_CUES.search(text) else "code or a longer request"
+    return "off", "plain chat"
+
+
+DEFAULT_BUDGET = 300000  # tokens a turn may process before the tab warns, cache reads included
+
+
+def team_settings():
+    try:
+        with open(TEAM, encoding="utf-8") as file:
+            return json.load(file)
+    except (OSError, ValueError):
+        return {}
+
+
+SEARCH_CHOICES = ("exa", "9router", "both")
+
+
+def search_choice():
+    """Which web search the research agent gets: Exa's tools, the 9router web-search script, or both."""
+    value = team_settings().get("search", "exa")
+    return value if value in SEARCH_CHOICES else "exa"
+
+
+def research_rules():
+    """The research child's own rules: Exa's tools only when asked for, and a shell for web-search only when asked for."""
+    choice = search_choice()
+    rules = list(TOOLS_ON)
+    if choice == "9router":  # OpenCode's own websearch is Exa too
+        rules += [{"action": tool, "resource": "*", "effect": "deny"} for tool in ("exa_*", "websearch")]
+    if choice == "exa":
+        rules.append({"action": "shell", "resource": "*", "effect": "deny"})
+    return rules
+
+
+def budget():
+    value = team_settings().get("budget", DEFAULT_BUDGET)
+    return value if isinstance(value, int) and value >= 0 else DEFAULT_BUDGET
+
+
 def advising():
     try:
         with open(TEAM, encoding="utf-8") as file:
@@ -174,8 +286,10 @@ def models_in(config):
 
 def team():
     config = read_config()
-    return {"advising": advising(), "advisor": agent_files().get("advisor", {}).get("model", ""),
-            "subagents": config.get("agent", {}).get("general", {}).get("model", ""), "models": models_in(config)}
+    files = agent_files()
+    return {"advising": advising(), "budget": budget(), "thinking": thinking_mode(), "search": search_choice(), "advisor": files.get("advisor", {}).get("model", ""),
+            "hypervisor": files.get("hypervisor", {}).get("model", ""),
+            "subagents": config.get("agents", {}).get("general", {}).get("model", ""), "models": models_in(config)}
 
 
 def memory():
@@ -227,32 +341,56 @@ def memory_note(mode):
     return note + (MEMORY_RULE if mode == "tools" else "")
 
 
+def with_variant(old, new):
+    """NEW keeps OLD's thinking level ("#deep"), unless it names its own."""
+    return new if "#" in new or "#" not in (old or "") else f"{new}#{old.split('#', 1)[1]}"
+
+
 def set_agent_model(name, model):
     path = os.path.join(AGENT_FILES, f"{name}.md")
     with open(path, encoding="utf-8") as file:
         text = file.read()
+    old = (re.search(r"^model: (.*)$", text, re.M) or [None, ""])[1]
     with open(path, "w", encoding="utf-8") as file:
-        file.write(re.sub(r"^model: .*$", f"model: {model}", text, count=1, flags=re.M))
+        file.write(re.sub(r"^model: .*$", f"model: {with_variant(old, model)}", text, count=1, flags=re.M))
 
 
 def team_set(role, value):
-    if role == "advising":
-        if value not in ("on", "off"):
-            raise RuntimeError("use on or off")
+    if role in ("advising", "budget", "thinking", "search"):
+        settings = team_settings()
+        if role == "search":
+            if value not in SEARCH_CHOICES:
+                raise RuntimeError("use exa, 9router or both")
+            settings["search"] = value
+        elif role == "thinking":
+            if value not in THINKING_MODES:
+                raise RuntimeError("use auto, off, think or deep")
+            settings["thinking"] = value
+        elif role == "advising":
+            if value not in ("on", "off"):
+                raise RuntimeError("use on or off")
+            settings["advisor"] = value == "on"
+        else:
+            if not value.isdigit() or int(value) > 100_000_000:
+                raise RuntimeError("give the tokens as a whole number, 0 for no warning")
+            settings["budget"] = int(value)
         with open(TEAM, "w", encoding="utf-8") as file:
-            json.dump({"advisor": value == "on"}, file)
+            json.dump(settings, file)
         return team()
     config = read_config()
-    if role not in ("advisor", "subagents") or value not in [item["id"] for item in models_in(config)]:
+    if role not in ("advisor", "hypervisor", "subagents") or value.split("#")[0] not in [item["id"] for item in models_in(config)]:
         raise RuntimeError("pick one of the models in the list")
-    if role == "advisor":
-        set_agent_model("advisor", value)
+    if role in ("advisor", "hypervisor"):
+        if role not in agent_files():
+            raise RuntimeError(f"there is no {role} agent file")
+        set_agent_model(role, value)
         return team()
     for name, fields in agent_files().items():
-        if name != "advisor" and fields.get("mode") == "subagent":
+        if name not in ("advisor", "hypervisor") and fields.get("mode") == "subagent":  # they keep their own chains
             set_agent_model(name, value)
     for name in ("general", "explore"):
-        config.setdefault("agent", {}).setdefault(name, {})["model"] = value
+        entry = config.setdefault("agents", {}).setdefault(name, {})
+        entry["model"] = with_variant(entry.get("model"), value)
     temporary = f"{CONFIG}.tmp"
     with open(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as file:
         json.dump(config, file, indent=2)
@@ -322,7 +460,10 @@ def busy():
 def rules_for(mode, agent):
     if mode == "off":
         return TOOLS_OFF
-    return PLAN_ON if agent == "plan" else TOOLS_ON
+    rules = PLAN_ON if agent == "plan" else MAIN_ON
+    if search_choice() == "9router":  # The web comes from web-search, through 9router, not from Exa's websearch
+        rules = rules + [{"action": "websearch", "resource": "*", "effect": "deny"}]
+    return rules
 JOURNALS = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "opencode-tab")
 START_TIMEOUT = 45  # seconds to wait for the server
 EVENT_TIMEOUT = 180  # seconds of silence on the event stream, heartbeats included
@@ -343,6 +484,10 @@ def keyring_env():
                             capture_output=True, text=True).stdout.strip()
     if github:  # Its own read-only token, not the gh login, which can administer organisations
         env["GITHUB_MCP_TOKEN"] = github
+    router = subprocess.run(["secret-tool", "lookup", "application", "9router", "kind", "api"],
+                            capture_output=True, text=True).stdout.strip()
+    if router:  # The local 9router's own key, for the 9router provider in opencode.json
+        env["NINEROUTER_API_KEY"] = router
     return env
 
 
@@ -446,10 +591,10 @@ def data_of(reply):
     return reply.get("data", reply) if isinstance(reply, dict) else {}
 
 
-def prepare_session(api, session, model, rules, title, agent, folder=""):
-    """Returns a session id with exactly these rules, on the wanted model, or raises."""
+def prepare_session(api, session, model, rules, title, agent, folder="", variant=None):
+    """Returns a session id with exactly these rules, on the wanted model and variant, or raises."""
     provider, _, model_id = model.partition("/")
-    wanted = {"id": model_id, "providerID": provider}
+    wanted = {"id": model_id, "providerID": provider, **({"variant": variant} if variant else {})}
     info = None
     if session:
         status, reply = api.call("GET", f"/api/session/{session}")
@@ -477,7 +622,7 @@ def prepare_session(api, session, model, rules, title, agent, folder=""):
         if status != 204:
             raise RuntimeError(f"could not switch agent ({status})")
     current = info.get("model") or {}
-    if (current.get("id"), current.get("providerID")) != (model_id, provider):
+    if (current.get("id"), current.get("providerID"), current.get("variant")) != (model_id, provider, variant):
         status, _ = api.call("POST", f"/api/session/{info['id']}/model", {"model": wanted})
         if status != 204:
             raise RuntimeError(f"could not switch model ({status})")
@@ -523,6 +668,128 @@ def journal_path(session):
     return os.path.join(JOURNALS, f"{session}.jsonl")
 
 
+def usage_path(session):
+    return os.path.join(JOURNALS, f"usage-{session}.jsonl")
+
+
+def usage_add(session, record):
+    os.makedirs(JOURNALS, mode=0o700, exist_ok=True)
+    with open(usage_path(session), "a", encoding="utf-8") as file:
+        file.write(json.dumps(record) + "\n")
+
+
+def processed(entry):
+    """Every token a step handled: what was sent, cached or not, and what came back."""
+    return entry["input"] + entry["cache"] + entry["output"] + entry["reasoning"]
+
+
+def usage(session):
+    """The chat's tokens by agent and model, summed over the turns the tab recorded."""
+    if not SESSION_ID.fullmatch(session):
+        raise RuntimeError("that isn't a session")
+    totals, turns, context = {}, 0, None
+    try:
+        with open(usage_path(session), encoding="utf-8") as file:
+            records = [json.loads(line) for line in file if line.strip()]
+    except FileNotFoundError:
+        records = []
+    for record in records:
+        turns += 1
+        context = record.get("context") or context
+        for entry in record.get("agents", []):
+            key = (entry["agent"], entry["model"])
+            total = totals.setdefault(key, {"agent": entry["agent"], "model": entry["model"], "steps": 0,
+                                            "input": 0, "cache": 0, "output": 0, "reasoning": 0})
+            for field in ("steps", "input", "cache", "output", "reasoning"):
+                total[field] += entry.get(field, 0)
+    agents = sorted(totals.values(), key=processed, reverse=True)
+    return {"turns": turns, "agents": agents, "total": sum(processed(entry) for entry in agents),
+            "context": context, "budget": budget()}
+
+
+ROUTER_DB = os.path.expanduser("~/.9router/db/data.sqlite")
+
+
+def totals_of(tokens):
+    cache = (tokens or {}).get("cache") or {}
+    return {"input": (tokens or {}).get("input", 0) or 0, "output": (tokens or {}).get("output", 0) or 0,
+            "reasoning": (tokens or {}).get("reasoning", 0) or 0, "read": cache.get("read", 0) or 0, "write": cache.get("write", 0) or 0}
+
+
+def tokens_added(before, tokens):
+    """OpenCode's usage events carry the running totals of the whole chat, not one request's. This is what the event adds."""
+    now = totals_of(tokens)
+    added = {key: now[key] - (before or {}).get(key, 0) for key in now}
+    if any(value < 0 for value in added.values()):  # The totals started again, so this event is all new
+        added = now
+    return now, {"input": added["input"], "output": added["output"], "reasoning": added["reasoning"],
+                 "cache": {"read": added["read"], "write": added["write"]}}
+
+
+def utc_now():
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def served_since(started):
+    """The models 9router really used since STARTED, in order, with request counts. A combo like
+    chat-chain names a list; this is who answered. 9router writes a row once a request ends, so wait a moment."""
+    import sqlite3
+    rows = []
+    for _ in range(5):
+        try:
+            with sqlite3.connect(f"file:{ROUTER_DB}?mode=ro", uri=True, timeout=2) as db:
+                rows = db.execute("select provider, model, status from usageHistory where timestamp >= ? order by timestamp",
+                                  (started,)).fetchall()
+        except sqlite3.Error:
+            return []
+        if rows:
+            break
+        time.sleep(0.2)
+    served = []
+    for provider, name, status in rows:
+        if served and served[-1]["provider"] == provider and served[-1]["model"] == name:
+            served[-1]["requests"] += 1
+        else:
+            served.append({"provider": provider, "model": name, "requests": 1, "ok": status == "ok"})
+    return served
+
+
+def model_info(api, model):
+    """The model's entry in OpenCode's list (limit, variants), or {}."""
+    provider, _, name = model.partition("/")
+    try:
+        status, reply = api.call("GET", "/api/model", timeout=10)
+        listed = reply.get("data", reply) if isinstance(reply, dict) else reply
+        for item in listed if status == 200 else []:
+            if item.get("providerID") == provider and item.get("modelID") == name:
+                return item
+    except (OSError, ValueError, AttributeError, http.client.HTTPException):
+        pass
+    return {}
+
+
+def model_limit(api, model):
+    """The model's context size from OpenCode's list, or None."""
+    return (model_info(api, model).get("limit") or {}).get("context")
+
+
+def turn_starts(items):
+    """Indexes of the user messages that start a turn. The helper's follow-up after NEEDS_TOOLS belongs to the turn before."""
+    return [i for i, item in enumerate(items)
+            if item.get("type") == "user" and not item.get("text", "").startswith(TOOLS_FOLLOW_UP)]
+
+
+def drop_last_turns(api, session, count):
+    """Removes the newest COUNT user messages and what followed them from the session's history. Files stay as they are."""
+    items = all_messages(api, session)
+    users = turn_starts(items)
+    if count < 1 or not users:
+        return
+    first = users[-min(count, len(users))]
+    checked(api.call("POST", f"/api/session/{session}/revert/stage", {"messageID": items[first]["id"], "files": False}))
+    checked(api.call("POST", f"/api/session/{session}/revert/commit"))
+
+
 def journal_add(session, tool, entries):
     """OpenCode keeps no patch for the write tool, only the permission request has it."""
     os.makedirs(JOURNALS, mode=0o700, exist_ok=True)
@@ -553,6 +820,181 @@ def safe_read(request):
     return request.get("action") == "read" and bool(request.get("resources")) and all(map(safe_path, request["resources"]))
 
 
+ACCESS_FILE = os.path.expanduser("~/.agents/allowed-paths.json")  # Files and folders the user always lets models read, or read and change
+OLD_ACCESS_FILE = os.path.expanduser("~/.agents/read-access.json")  # The first version: a plain list of paths, read only
+PATH_LEVELS = ("read", "write")  # For files and folders
+ACCESS_LEVELS = PATH_LEVELS + ("run",)  # run: a command the user always lets models run in one project folder
+RUN_DENIED = {  # Never grantable: each can run anything, or change who you are, or move the machine's files
+    "sudo", "su", "doas", "pkexec", "bash", "sh", "zsh", "fish", "dash", "ksh", "csh", "tcsh", "eval", "exec", "env", "xargs",
+    "python", "python3", "node", "nodejs", "deno", "bun", "ruby", "perl", "php", "lua", "awk", "gawk", "sed", "find", "ssh",
+    "scp", "sftp", "rsync", "curl", "wget", "nc", "ncat", "socat", "telnet", "dd", "mkfs", "shred", "rm", "mv", "chmod",
+    "chown", "chgrp", "kill", "pkill", "killall", "systemctl", "reboot", "shutdown", "mount", "umount", "crontab", "at",
+    "docker", "podman", "pacman", "yay", "paru", "tee", "ln", "truncate", "source", ".", "nohup", "setsid", "timeout", "watch", "script", "gdb", "vim", "vi", "nano", "less",
+}
+RUN_NEEDS_SUBCOMMAND = {"git", "npm", "pnpm", "yarn", "cargo", "go", "pip", "pip3", "gh", "make", "kubectl", "systemctl", "uv", "poetry", "composer", "gem", "bundle"}
+RUN_UNSAFE = re.compile(r"[`$<>\n(){}\\]|(?<!&)&(?!&)")  # Substitution, redirection, a newline, a backgrounded command
+READ_TOOLS = ("read", "grep", "glob", "list")
+WRITE_TOOLS = ("edit", "write")
+AGENTS_HOME = os.path.realpath(os.path.expanduser("~/.agents"))
+
+
+def access_entries():
+    """[{"path", "access"}], oldest first. A list from the first version counts as read-only."""
+    for path in (ACCESS_FILE, OLD_ACCESS_FILE):
+        try:
+            with open(path, encoding="utf-8") as file:
+                found = json.load(file)
+        except (OSError, ValueError):
+            continue
+        entries = []
+        for entry in found if isinstance(found, list) else []:
+            if isinstance(entry, str):
+                entry = {"path": entry, "access": "read"}
+            if isinstance(entry, dict) and isinstance(entry.get("path"), str) and entry.get("access") in ACCESS_LEVELS:
+                if entry["access"] == "run":
+                    if isinstance(entry.get("command"), str):
+                        entries.append({"path": entry["path"], "access": "run", "command": entry["command"]})
+                else:
+                    entries.append({"path": entry["path"], "access": entry["access"]})
+        return entries
+    return []
+
+
+def save_access(entries):
+    os.makedirs(os.path.dirname(ACCESS_FILE), exist_ok=True)
+    temporary = f"{ACCESS_FILE}.{os.getpid()}"
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+        json.dump(entries, file, indent=2)
+        file.write("\n")
+    os.replace(temporary, ACCESS_FILE)
+
+
+def access_list():
+    return [dict(entry, exists=os.path.exists(entry["path"])) for entry in access_entries()]
+
+
+def run_prefix(command):
+    """The words of one simple command, or raises. The first word can't be a shell, an interpreter or anything that deletes."""
+    if not command or len(command) > 200 or RUN_UNSAFE.search(command) or re.search(r"[;|&]", command):
+        raise RuntimeError("use one simple command: no pipes, ;, &&, redirects, $ or backticks")
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        raise RuntimeError("the quotes in that command don't match")
+    if not words:
+        raise RuntimeError("give a command")
+    if os.path.basename(words[0]) in RUN_DENIED or "/" in words[0]:
+        raise RuntimeError(f"{words[0]} can't be allowed for good: it can run anything, or delete or move files. Use a plain program name like git or npm")
+    if words[0] in RUN_NEEDS_SUBCOMMAND and len(words) < 2:
+        raise RuntimeError(f"name what {words[0]} may do, like {words[0]} status: {words[0]} alone covers everything it can do")
+    return words
+
+
+def access_add(path, access, command=""):
+    """Always lets models read, or read and change, a file or folder; or run a command in a project folder. Again changes the level."""
+    if access not in ACCESS_LEVELS:
+        raise RuntimeError("the level is read, write or run")
+    if access == "run":
+        folder = check_folder(path)
+        if folder == AGENTS_HOME:
+            raise RuntimeError("pick a project first: commands are allowed per project folder, not in ~/.agents")
+        words = run_prefix(command.strip())
+        text = " ".join(words)
+        entries = [entry for entry in access_entries() if not (entry["access"] == "run" and entry["path"] == folder and entry["command"] == text)]
+        save_access(entries + [{"path": folder, "access": "run", "command": text}])
+        return access_list()
+    written = os.path.expanduser(path.strip())
+    if not os.path.isabs(written):
+        raise RuntimeError(f"use a full path, not {path}")
+    real = os.path.realpath(written)
+    home = os.path.realpath(os.path.expanduser("~"))
+    if not os.path.exists(real):
+        raise RuntimeError(f"{path} does not exist")
+    if not real.startswith(home + os.sep):
+        raise RuntimeError("it must be inside the home folder, and can't be the home folder itself")
+    inside = os.path.relpath(real, home)
+    if private_path(inside) or inside.split(os.sep)[0] in HOME_PRIVATE:
+        raise RuntimeError(f"{path} holds private files, so models can't be given it")
+    if access == "write" and (real == AGENTS_HOME or AGENTS_HOME.startswith(real + os.sep)):
+        raise RuntimeError("models can't change ~/.agents: it holds this list, your memory and your skills")
+    entries = [entry for entry in access_entries() if not (entry["access"] in PATH_LEVELS and entry["path"] == real)]
+    save_access(entries + [{"path": real, "access": access}])
+    return access_list()
+
+
+def access_remove(which):
+    """WHICH is its number in the list, or a path (which removes that path's read or write entry)."""
+    entries = access_entries()
+    if which.isdigit() and 1 <= int(which) <= len(entries):
+        entries = entries[:int(which) - 1] + entries[int(which):]
+    elif any(entry["path"] == which and entry["access"] in PATH_LEVELS for entry in entries):
+        entries = [entry for entry in entries if not (entry["path"] == which and entry["access"] in PATH_LEVELS)]
+    else:
+        raise RuntimeError("that is not in the list")
+    save_access(entries)
+    return access_list()
+
+
+def access_covers(path, levels):
+    """True when a granted file or folder at one of these levels holds the path, and it is not a private file inside it."""
+    real = os.path.realpath(os.path.join(FOLDER, os.path.expanduser(path)))
+    for entry in access_entries():
+        granted = os.path.realpath(entry["path"])
+        if entry["access"] in levels and (real == granted or real.startswith(granted + os.sep)):
+            if entry["access"] == "write" and (real == AGENTS_HOME or real.startswith(AGENTS_HOME + os.sep)) and os.path.dirname(real) == AGENTS_HOME:
+                continue  # Never the files that hold the rules themselves
+            return not private_path(os.path.relpath(real, granted))
+    return False
+
+
+def shell_granted(resources, tool_input):
+    """Every simple command in the request starts with a command the user allowed in this project folder, and nothing
+    else rides along: no substitution, redirect or backgrounding, and it runs inside the project."""
+    if not resources or not isinstance(tool_input, dict) or not isinstance(tool_input.get("command"), str):
+        return False
+    if RUN_UNSAFE.search(tool_input["command"]):
+        return False
+    workdir = tool_input.get("workdir") or tool_input.get("cwd")
+    root = os.path.realpath(FOLDER)
+    if workdir and not (os.path.realpath(os.path.join(FOLDER, str(workdir))) + os.sep).startswith(root + os.sep):
+        return False
+    grants = []
+    for entry in access_entries():
+        folder = os.path.realpath(entry["path"])
+        if entry["access"] == "run" and (root == folder or root.startswith(folder + os.sep)):
+            grants.append(entry["command"].split())
+    for resource in resources:
+        try:
+            words = shlex.split(resource)
+        except ValueError:
+            return False
+        if not any(words[:len(prefix)] == prefix for prefix in grants if words):
+            return False
+    return True
+
+
+def access_granted(request, tool_name, tool_input):
+    """A read or edit the user already allowed for good: skip the question."""
+    if not access_entries():
+        return False
+    action = request.get("action")
+    resources = request.get("resources") or []
+    path = tool_input.get("path") or tool_input.get("filePath") if isinstance(tool_input, dict) else None
+    if action == "shell":
+        return shell_granted(resources, tool_input)
+    if action == "read":
+        return bool(resources) and all(access_covers(resource, PATH_LEVELS) for resource in resources)
+    if action in WRITE_TOOLS:
+        return bool(resources) and all(access_covers(resource, ("write",)) for resource in resources)
+    if action == "external_directory" and isinstance(path, str) and path:
+        if tool_name in READ_TOOLS:
+            return access_covers(path, PATH_LEVELS)
+        if tool_name in WRITE_TOOLS:
+            return access_covers(path, ("write",))
+    return False
+
+
 def read_mentions(text):
     """Splits @mentions into prompt attachments. Unknown names stay plain text."""
     files, agents, refused = [], [], []
@@ -580,22 +1022,135 @@ def target_of(tool_input):
     return ""
 
 
+EXHAUSTED = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "opencode-tab", "exhausted.json")
+QUOTA_WORDS = re.compile(r"\b429\b|quota|rate.?limit|too many requests|resource.?exhausted|exceeded", re.I)
+COMBOS = re.compile(r"chain|hypervisor")  # A 9router combo falls back by itself, so it is never marked out of quota
+MAX_WAIT = 86400  # seconds a model is kept out, however long the provider asks
+
+
+def exhausted_models():
+    """{model: {"until": epoch seconds, "why": text}} for the models still out of quota."""
+    try:
+        with open(EXHAUSTED, encoding="utf-8") as file:
+            found = json.load(file)
+    except (OSError, ValueError):
+        return {}
+    now = time.time()
+    return {model: entry for model, entry in found.items()
+            if isinstance(entry, dict) and isinstance(entry.get("until"), (int, float)) and entry["until"] > now}
+
+
+def save_exhausted(models):
+    os.makedirs(os.path.dirname(EXHAUSTED), mode=0o700, exist_ok=True)
+    temporary = f"{EXHAUSTED}.{os.getpid()}"
+    with open(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as file:
+        json.dump(models, file)
+    os.replace(temporary, EXHAUSTED)
+
+
+def mark_exhausted(model, seconds, why):
+    if not model or COMBOS.search(model):
+        return
+    models = exhausted_models()
+    models[model] = {"until": time.time() + min(seconds, MAX_WAIT), "why": why[:160]}
+    save_exhausted(models)
+
+
+def exhausted_clear(model=""):
+    models = exhausted_models()
+    if model:
+        models.pop(model, None)
+    else:
+        models = {}
+    save_exhausted(models)
+    return exhausted_list()
+
+
+def exhausted_list():
+    return [{"model": model, "until": entry["until"], "why": entry.get("why", "")} for model, entry in sorted(exhausted_models().items())]
+
+
+def clock(epoch):
+    return datetime.datetime.fromtimestamp(epoch).strftime("%H:%M")
+
+
+def wait_message(model, until):
+    name = model.split("/", 1)[-1]
+    return f"{name} is out of free requests until {clock(until)}. Pick another model with /model, or /regen with one."
+
+
+def retry_verdict(error, attempt):
+    """What a scheduled retry means: (stop?, quota?, seconds to keep the model out). Quota errors with a long wait stop at
+    once; the same error with no long wait gets one more try; a model that can't be reached gets three."""
+    message = str((error or {}).get("message") or "")
+    quota = bool(QUOTA_WORDS.search(message))
+    delay = re.search(r"retryDelay\W{0,6}(\d+(?:\.\d+)?)\s*s", message)
+    if delay:
+        seconds = float(delay.group(1))
+    elif re.search(r"per.?day|daily", message, re.I):
+        seconds = MAX_WAIT
+    else:
+        seconds = 300 if quota else 0
+    if quota:
+        return (seconds >= 600 and attempt >= 2) or attempt >= 3, True, seconds
+    return attempt >= 4, False, 0
+
+
 def send(model, session, mode, agent, folder, text):
     die_with_parent()
     marker = turn_marker()
+    regen = os.environ.get("OPENCODE_TAB_REGEN", "")
     try:
-        return run_turn(model, session, mode, agent, folder, text)
+        result = run_turn(model, session, mode, agent, folder, text, int(regen) if regen.isdigit() else 0, True)
+        if isinstance(result, tuple) and result[0] is RETRY_WITH_TOOLS:
+            result = run_turn(model, result[1], mode, agent, folder, TOOLS_FOLLOW_UP, 0, False)
+        return result
     finally:
         os.unlink(marker)
 
 
-def run_turn(model, session, mode, agent, folder, text):
+def run_turn(model, session, mode, agent, folder, text, regen=0, plain_ok=True):
     active = {}
     timers = {}
     timed_out = set()
     tools = {}
     asked_files = {}
     family = set()  # this turn's session and every subagent session under it
+    step_models = {}  # session -> the model its last step ran on, for a retry that names only the session
+    last_totals = {}  # session -> the running totals OpenCode last reported for it
+    spent = {}  # tokens by session in this turn: agent, model, steps and token counts
+    turn = {"prompt": 0, "warned": False, "limit": None, "started": utc_now()}
+
+    def blank(agent, used_model):
+        return {"agent": agent, "model": used_model, "steps": 0, "input": 0, "cache": 0, "output": 0, "reasoning": 0}
+
+    def count(session_id, tokens):
+        entry = spent.setdefault(session_id, blank("subagent", ""))
+        entry["steps"] += 1
+        entry["input"] += tokens.get("input", 0) or 0
+        entry["cache"] += (tokens.get("cache") or {}).get("read", 0) or 0
+        entry["output"] += tokens.get("output", 0) or 0
+        entry["reasoning"] += tokens.get("reasoning", 0) or 0
+        if session_id == active.get("id"):  # what the next step sends, roughly: this prompt and its answer
+            turn["prompt"] = ((tokens.get("input", 0) or 0) + ((tokens.get("cache") or {}).get("read", 0) or 0)
+                              + (tokens.get("output", 0) or 0))
+        total = sum(processed(entry) for entry in spent.values())
+        limit = budget()
+        if limit and total > limit and not turn["warned"]:
+            turn["warned"] = True
+            emit({"type": "budget", "total": total, "budget": limit})
+
+    def turn_usage():
+        if turn["limit"] is None and "api" in active:  # a server that just started may not have listed its models yet
+            turn["limit"] = model_limit(active["api"], model)
+        record = {"served": served_since(turn["started"]) if model.startswith("9router/") else [],
+                  "agents": [entry for entry in spent.values() if entry["steps"] > 0],
+                  "context": {"used": turn["prompt"], "limit": turn["limit"]} if turn["prompt"] else None}
+        emit({"type": "turn_usage", **record})
+        try:
+            usage_add(active["id"], record)
+        except OSError:
+            pass
 
     def stop(*_):
         # The shell's stop button. The turn must end on the server too.
@@ -612,16 +1167,43 @@ def run_turn(model, session, mode, agent, folder, text):
 
     signal.signal(signal.SIGTERM, stop)
     try:
+        level, why = choose_thinking(text, thinking_mode())
+        if not plain_ok and level == "off":
+            why = "plain chat, but it needed tools"
+        emit({"type": "thinking", "level": level, "reason": why})  # at once, so a quick answer shows no waiting animation
+        out = exhausted_models().get(model)
+        if out:  # Out of quota a moment ago: don't ask again
+            emit({"type": "failed", "error": wait_message(model, out["until"])})
+            return 1
         api = connect()
-        sid = prepare_session(api, session, model, rules_for(mode, agent), " ".join(text.split())[:60] or "AI tab", agent, folder)
+        info = model_info(api, model)
+        variant = level if level in {item.get("id") for item in info.get("variants") or []} else None
+        files, subagents, refused = read_mentions(text)
+        # Plain chat (auto picked no thinking, no agent called) tries without tools first
+        plain = plain_ok and mode == "tools" and thinking_mode() == "auto" and level == "off" and not subagents
+        sid = prepare_session(api, session, model, TOOLS_OFF if plain else rules_for(mode, agent),
+                              " ".join(text.split())[:60] or "AI tab", agent, folder, variant)
+        if session and regen > 0:
+            drop_last_turns(api, sid, regen)
         family.add(sid)
+        try:  # What the chat had used before this turn, so the turn counts only its own requests
+            last_totals[sid] = totals_of(checked(api.call("GET", f"/api/session/{sid}"))["data"].get("tokens"))
+        except (OSError, RuntimeError, KeyError, http.client.HTTPException):
+            pass
         active.update(api=api, id=sid)
         emit({"type": "session", "id": sid})
+        spent[sid] = blank(agent, model)
+        turn["limit"] = (info.get("limit") or {}).get("context")
+        if not variant and level != "off":  # a quick answer keeps its skeleton
+            emit({"type": "thinking", "level": "default", "reason": "this model has no thinking levels"})
 
-        note = ADVISOR_NOTE if mode == "tools" and advising() else ""
+        follow_up = text == TOOLS_FOLLOW_UP  # The run after a tool-less try said NEEDS_TOOLS
+        note = CHAT_ONLY_NOTE if plain else ((ADVISOR_NOTE if mode == "tools" and advising() else "") + (RETRY_NOTE if follow_up else ""))
+
         if not session:  # A chat keeps what it started with, so only a new one needs it
-            note = memory_note(mode) + note
-        files, subagents, refused = read_mentions(text)
+            note = memory_note("off" if plain else mode) + note
+        held = []  # a tool-less reply waits here, in case it is only NEEDS_TOOLS. So does the retry's, if the model says it again
+        hold = plain or follow_up
         if files or refused:
             emit({"type": "attached", "files": [item["name"] for item in files], "refused": refused})
 
@@ -634,20 +1216,48 @@ def run_turn(model, session, mode, agent, folder, text):
 
         for event in api.events():
             kind, data = event.get("type"), event.get("data") or {}
+            if os.environ.get("OPENCODE_TAB_DEBUG") and kind not in ("session.text.delta", "session.reasoning.delta"):
+                print(f"DEBUG {kind} {json.dumps(data)[:400]}", file=sys.stderr, flush=True)
+            if kind == "session.step.started":
+                used = data.get("model") or {}
+                step_models[data.get("sessionID")] = f"{used.get('providerID', '')}/{used.get('id', '')}"
+            elif kind == "session.retry.scheduled" and data.get("sessionID") in family:
+                attempt = data.get("attempt") or 0
+                stop, quota, seconds = retry_verdict(data.get("error"), attempt)
+                if stop:
+                    failing = step_models.get(data.get("sessionID")) or model
+                    if quota:
+                        mark_exhausted(failing, seconds, str((data.get("error") or {}).get("message") or ""))
+                    for timer in timers.values():
+                        timer.cancel()
+                    interrupt_all()
+                    reason = str((data.get("error") or {}).get("message") or "no reason given").replace("\n", " ")[:160]
+                    emit({"type": "failed", "error": wait_message(failing, time.time() + min(seconds, MAX_WAIT)) if quota and seconds >= 600
+                          else f"{failing.split('/', 1)[-1]} keeps failing: {reason}. Stopped after {attempt - 1} tries. Try again later, or pick another model with /model."})
+                    return 1
             if kind == "server.connected":  # listening now, so nothing can be missed
                 status, _ = api.call("POST", f"/api/session/{sid}/prompt", {"text": text + note, "files": files, "agents": subagents})
                 if status != 200:
                     raise RuntimeError(f"could not send the message ({status})")
             elif kind == "session.created" and data.get("parentID") in family:
                 family.add(data.get("sessionID"))
+                spent[data.get("sessionID")] = blank(data.get("agent", "") or "subagent", "")
+                if data.get("agent") == "research" and mode == "tools" and not plain:
+                    try:  # its own rules, so it has the docs and web search tools the main chat goes without
+                        api.call("PATCH", f"/api/session/{data.get('sessionID')}", {"permissions": research_rules()}, timeout=5)
+                    except (OSError, http.client.HTTPException):
+                        pass
                 emit({"type": "agent", "id": data.get("sessionID"), "name": data.get("agent", ""),
                       "task": data.get("title", ""), "state": "running"})
             elif data.get("sessionID") not in family:
                 continue
             elif data.get("sessionID") != sid and kind == "session.step.started":
-                emit({"type": "agent", "id": data["sessionID"], "model": (data.get("model") or {}).get("id", "")})
+                child_model = (data.get("model") or {}).get("id", "")
+                spent.setdefault(data["sessionID"], blank("subagent", ""))["model"] = child_model
+                emit({"type": "agent", "id": data["sessionID"], "model": child_model})
             elif data.get("sessionID") != sid and kind == "session.usage.updated":
-                tokens = data.get("tokens") or {}
+                last_totals[data["sessionID"]], tokens = tokens_added(last_totals.get(data["sessionID"]), data.get("tokens"))
+                count(data["sessionID"], tokens)
                 emit({"type": "agent", "id": data["sessionID"], "tokens": tokens.get("input", 0) + tokens.get("output", 0)})
             elif data.get("sessionID") != sid and kind in TERMINAL:
                 emit({"type": "agent", "id": data["sessionID"],
@@ -655,14 +1265,23 @@ def run_turn(model, session, mode, agent, folder, text):
             elif data.get("sessionID") != sid and kind in ("session.text.delta", "session.reasoning.delta"):
                 continue  # a subagent's reply comes back to the model as a tool result
             elif kind == "session.text.delta":
-                emit({"type": "text", "delta": data.get("delta", "")})
+                if hold:
+                    held.append(data.get("delta", ""))
+                else:
+                    emit({"type": "text", "delta": data.get("delta", "")})
             elif kind == "session.reasoning.delta":
                 emit({"type": "reasoning", "delta": data.get("delta", "")})
             elif kind == "session.usage.updated":
-                emit({"type": "usage", "tokens": data.get("tokens", {})})
+                last_totals[sid], tokens = tokens_added(last_totals.get(sid), data.get("tokens"))
+                count(sid, tokens)
+                emit({"type": "usage", "tokens": tokens})
             elif kind == "permission.asked":
                 owner = data.get("sessionID")
-                if safe_read(data) or chat_key(data) in chat_allowed(sid):
+                asking = tools.get((data.get("source") or {}).get("id"), {})
+                if access_granted(data, asking.get("name", ""), asking.get("input")) and data.get("action") != "read":
+                    # Kept for /undo: only the permission request holds the patch
+                    asked_files[(data.get("source") or {}).get("id")] = (data.get("metadata") or {}).get("files") or []
+                if safe_read(data) or chat_key(data) in chat_allowed(sid) or access_granted(data, asking.get("name", ""), asking.get("input")):
                     status, _ = api.call("POST", f"/api/session/{owner}/permission/{data['id']}/reply", {"decision": "once"})
                     if status == 204:
                         continue
@@ -677,6 +1296,8 @@ def run_turn(model, session, mode, agent, folder, text):
                 emit({"type": "permission", "id": data["id"], "session": owner, "action": data.get("action", ""),
                       "resources": data.get("resources", []), "subagent": owner != sid,
                       "chatTool": chat_key(data) if CHAT_TOOLS.fullmatch(chat_key(data)) else "",
+                      "tool": tools.get(source, {}).get("name", ""), "target": target_of(tool_input),  # What the tool itself asked for
+                      "readPath": str(tool_input.get("path") or tool_input.get("filePath") or "") if isinstance(tool_input, dict) and tools.get(source, {}).get("name") in READ_TOOLS + WRITE_TOOLS else "",
                       "detail": json.dumps(tool_input, indent=2) if data.get("action") in ("subagent", "memory_remember") else "",
                       "patch": "\n".join(entry.get("patch", "") for entry in files)})
             elif kind == "permission.replied":
@@ -706,6 +1327,16 @@ def run_turn(model, session, mode, agent, folder, text):
                     timer.cancel()
                 family.discard(sid)
                 interrupt_all()  # a background subagent must not outlive the turn
+                reply_text = "".join(held)
+                if hold and NEEDS_TOOLS in reply_text:
+                    reply_text = reply_text.replace(NEEDS_TOOLS, "").strip(" \n\t`*_.")
+                    if plain and kind.endswith("succeeded") and not reply_text:
+                        return (RETRY_WITH_TOOLS, sid)
+                    if not plain and not reply_text:  # Asked for tools twice, and used none
+                        reply_text = "The model asked for tools but did not use them. Send the message again, or pick another model."
+                if reply_text:
+                    emit({"type": "text", "delta": reply_text})
+                turn_usage()  # before the end, which the tab treats as the last event
                 emit({"type": kind.rsplit(".", 1)[1], "error": (data.get("error") or {}).get("message")})
                 return 0
         raise RuntimeError("the event stream ended early")
@@ -749,6 +1380,93 @@ def folders():
     return sorted(found)
 
 
+INSTRUCTIONS = "AGENTS.md"  # OpenCode reads this file in the project folder at the start of every chat
+INSTRUCTIONS_LIMIT = 20000
+PROJECTS = os.path.expanduser("~/.agents/projects")
+SKILL_FOLDERS = (os.path.expanduser("~/.agents/skills"), ".agents/skills")  # the second is inside a project
+PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}")
+INSTRUCTIONS_TEMPLATE = """# {name}
+
+## What this is
+One or two lines: what the project does and who it is for.
+
+## Stack
+Languages, frameworks and tools it uses.
+
+## Commands
+How to run, test and build it.
+
+## Conventions
+How code is named and organised here, and what to copy when adding something new.
+
+## Don't
+Things that look right but break this project.
+"""
+
+
+def skill_list(folder):
+    """Name and one-line description of each skill, from the user's folder and the project's."""
+    found = []
+    for base in (SKILL_FOLDERS[0], os.path.join(folder, SKILL_FOLDERS[1])):
+        try:
+            names = sorted(os.listdir(base))
+        except OSError:
+            continue
+        for name in names:
+            try:
+                with open(os.path.join(base, name, "SKILL.md"), encoding="utf-8") as file:
+                    head = file.read(2000)
+            except OSError:
+                continue
+            match = re.search(r"^description:[ \t]*(.*)$(\n[ \t]+.*)?", head, re.M)
+            text = ""
+            if match:
+                text = match.group(1).strip()
+                if text in (">", "|", ">-", "|-", ""):  # A folded value sits on the next line
+                    text = (match.group(2) or "").strip()
+            found.append({"name": name, "description": text.strip("\"'")[:160]})
+    return found
+
+
+def project_info(folder):
+    real = check_folder(folder)
+    text = None
+    try:
+        with open(os.path.join(real, INSTRUCTIONS), encoding="utf-8") as file:
+            text = file.read(INSTRUCTIONS_LIMIT + 1)
+    except OSError:
+        pass
+    return {"folder": real, "instructions": text, "skills": skill_list(real)}
+
+
+def project_save(folder, text):
+    real = check_folder(folder)
+    if len(text) > INSTRUCTIONS_LIMIT:
+        raise ValueError(f"keep the instructions under {INSTRUCTIONS_LIMIT} characters")
+    if SECRET.search(text):
+        raise ValueError("this looks like it holds a secret, and hosted models would read it, so it wasn't saved")
+    path = os.path.join(real, INSTRUCTIONS)
+    temporary = f"{path}.{os.getpid()}"
+    with open(temporary, "w", encoding="utf-8") as file:
+        file.write(text.rstrip("\n") + "\n")
+    os.replace(temporary, path)
+    return project_info(real)
+
+
+def project_new(name):
+    """A new folder in ~/.agents/projects with an AGENTS.md to fill in. Never touches one that exists."""
+    if not PROJECT_NAME.fullmatch(name):
+        raise ValueError("use letters, digits, dots, dashes or underscores, up to 40, starting with a letter or digit")
+    os.makedirs(PROJECTS, exist_ok=True)
+    path = os.path.join(PROJECTS, name)
+    if os.path.exists(path):
+        raise ValueError(f"{name} already exists in ~/.agents/projects")
+    os.mkdir(path)
+    with open(os.path.join(path, INSTRUCTIONS), "w", encoding="utf-8") as file:
+        file.write(INSTRUCTIONS_TEMPLATE.format(name=name))
+    return check_folder(path)
+
+
 def sessions():
     query = urllib.parse.urlencode({"limit": 100, "order": "desc"})
     found = checked(connect().call("GET", f"/api/session?{query}"))["data"]
@@ -764,11 +1482,16 @@ def messages(session):
     result = []
     for item in found:
         if item.get("type") == "user":
-            text = item.get("text", "").removesuffix(ADVISOR_NOTE).removesuffix(MEMORY_RULE)
+            text = item.get("text", "")
+            for note in (ADVISOR_NOTE, *OLD_ADVISOR_NOTES, CHAT_ONLY_NOTE, *OLD_CHAT_ONLY_NOTES, RETRY_NOTE):
+                text = text.removesuffix(note)
+            text = text.removesuffix(MEMORY_RULE)
+            if text.strip() == TOOLS_FOLLOW_UP:
+                continue  # the helper's own follow-up after NEEDS_TOOLS
             result.append({"role": "user", "text": MEMORY_NOTE.sub("", text)})
         elif item.get("type") == "assistant":
             text = "".join(part.get("text", "") for part in item.get("content", []) if part.get("type") == "text")
-            if text:
+            if text and text.strip(" \n`*_.") != NEEDS_TOOLS:
                 result.append({"role": "assistant", "text": text})
     return result
 
@@ -797,17 +1520,41 @@ def diff(session):
             for entry in patches_of(finished_tools(all_messages(connect(), session)), journal_read(session))]
 
 
+def compact(session):
+    """Summarizes the chat so far, so the next reply starts from the summary and the latest turns. Waits for it to finish."""
+    if not SESSION_ID.fullmatch(session):
+        raise RuntimeError("that isn't a session")
+    api = connect()
+    use_session_folder(data_of(checked(api.call("GET", f"/api/session/{session}"))))
+    made = checked(api.call("POST", f"/api/session/{session}/compact", {}))["data"]["id"]
+    deadline = time.time() + 180
+    while time.time() < deadline:
+        time.sleep(2)
+        for item in all_messages(api, session):
+            if item.get("id") == made and item.get("status") in ("completed", "failed", "cancelled"):
+                if item["status"] != "completed":
+                    raise RuntimeError(f"the summary {item['status']}")
+                tokens = item.get("tokens") or {}
+                return {"summary": len(item.get("summary") or ""), "read": tokens.get("input", 0), "wrote": tokens.get("output", 0)}
+    raise RuntimeError("the summary did not finish in 3 minutes")
+
+
 def undo(session):
     """Reverses the last turn's edits, then drops the turn. On any failure, nothing changes."""
     api = connect()
     use_session_folder(data_of(checked(api.call("GET", f"/api/session/{session}"))))
     items = all_messages(api, session)
-    last = max((i for i, item in enumerate(items) if item.get("type") == "user"), default=None)
+    last = max(turn_starts(items), default=None)
     if last is None:
         raise RuntimeError("nothing to undo")
     tools = finished_tools(items[last:])
     journal = journal_read(session)
     entries = patches_of(tools, journal)
+    root = os.path.realpath(FOLDER)
+    outside = sorted({entry["file"] for entry in entries
+                      if not os.path.realpath(os.path.join(FOLDER, entry["file"])).startswith(root + os.sep)})
+    if outside:  # The patches are relative to the project: outside it they would damage the file
+        raise RuntimeError(f"can't undo edits outside the project, change these by hand: {', '.join(outside)}")
     backups = {}
     for entry in entries:
         path = os.path.join(FOLDER, entry["file"])
@@ -859,12 +1606,26 @@ def main():
         return report(folders)
     if len(args) == 2 and args[0] == "check":
         return report(check_folder, args[1])
+    if len(args) == 2 and args[0] in ("project-info", "project-new"):
+        return report({"project-info": project_info, "project-new": project_new}[args[0]], args[1])
+    if len(args) == 3 and args[0] == "project-save":
+        return report(project_save, *args[1:])
+    if args == ["exhausted"]:
+        return report(exhausted_list)
+    if len(args) in (1, 2) and args[0] == "exhausted-clear":
+        return report(exhausted_clear, *args[1:])
+    if args == ["access-list"]:
+        return report(access_list)
+    if len(args) in (3, 4) and args[0] == "access-add":
+        return report(access_add, *args[1:])
+    if len(args) == 2 and args[0] == "access-remove":
+        return report(access_remove, args[1])
     if len(args) == 4 and args[0] == "reply":
         return reply(*args[1:])
     if args == ["sessions"]:
         return report(sessions)
-    if len(args) == 2 and args[0] in ("messages", "diff", "undo"):
-        return report({"messages": messages, "diff": diff, "undo": undo}[args[0]], args[1])
+    if len(args) == 2 and args[0] in ("messages", "diff", "undo", "usage", "compact"):
+        return report({"messages": messages, "diff": diff, "undo": undo, "usage": usage, "compact": compact}[args[0]], args[1])
     if args == ["agents"]:
         return report(agents)
     if len(args) == 5 and args[0] == "agent-new":

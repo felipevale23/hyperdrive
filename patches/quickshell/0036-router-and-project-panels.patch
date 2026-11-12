@@ -1,0 +1,1025 @@
+--- a/modules/ii/sidebarLeft/AiChat.qml
++++ b/modules/ii/sidebarLeft/AiChat.qml
+@@ -47,6 +47,28 @@
+         else Ai.addMessage(Translation.tr("This needs an OpenCode model. Pick one with /model"), Ai.interfaceRole);
+     }
+ 
++    // /allow: the paths models may always read (read) or read and change (write), kept by the helper
++    function allowCommand(args) {
++        const show = entries => {
++            if (entries.length === 0) {
++                Ai.addMessage(Translation.tr("No always-allowed paths. /allow read PATH lets models read a file or folder without asking. /allow write PATH lets them change it too."), Ai.interfaceRole);
++                return;
++            }
++            const level = access => access === "write" ? Translation.tr("read and change") : (access === "run" ? Translation.tr("run") : Translation.tr("read"));
++            const rows = entries.map((entry, i) => `| ${i + 1} | ${level(entry.access)} | ${entry.access === "run" ? Translation.tr("`%1` in %2").arg(entry.command).arg(entry.path) : (entry.exists ? entry.path : Translation.tr("%1 (gone)").arg(entry.path))} |`);
++            Ai.addMessage(`${Translation.tr("Always allowed, without asking. Change with /allow read PATH, /allow write PATH, /allow run COMMAND (in this project) or /allow remove NUMBER. Private files stay blocked, and edits outside a project can't be undone. A command allowed here covers any arguments you give it.")}\n\n`
++                + `| # | ${Translation.tr("Access")} | ${Translation.tr("Path")} |\n|---|---|---|\n${rows.join("\n")}`, Ai.interfaceRole);
++        };
++        const fail = error => Ai.addMessage(error, Ai.interfaceRole);
++        const action = (args[0] ?? "list").toLowerCase();
++        const rest = args.slice(1).join(" ").trim();
++        if (action === "list" || args.length === 0) Ai.runAgentTool(["access-list"], show, fail);
++        else if ((action === "read" || action === "write") && rest.length > 0) Ai.runAgentTool(["access-add", rest, action], show, fail);
++        else if (action === "run" && rest.length > 0) Ai.runAgentTool(["access-add", Ai.opencodeFolder, "run", rest], show, fail);
++        else if (action === "remove" && rest.length > 0) Ai.runAgentTool(["access-remove", rest], show, fail);
++        else Ai.addMessage(Translation.tr("Use %1allow to list, %1allow read PATH, %1allow write PATH, %1allow run COMMAND or %1allow remove NUMBER").arg(root.commandPrefix), Ai.interfaceRole);
++    }
++
+     // "/command typed" for a command with a list of arguments, else null
+     function argumentCommand(text) {
+         const match = text.match(new RegExp(`^${root.commandPrefix}(\\w+) (\\S*)$`));
+@@ -143,11 +165,15 @@
+             }
+         },
+         {
++            name: "allow",
++            // No argument list: Enter would accept the first suggestion, and a plain /allow could not run
++            description: Translation.tr("Always allowed without asking: /allow lists them, /allow read PATH, /allow write PATH, /allow run COMMAND (in this project), /allow remove NUMBER"),
++            execute: args => root.allowCommand(args)
++        },
++        {
+             name: "usage",
+-            description: Translation.tr("Tokens this OpenCode chat used, by agent and model, and 9router today"),
+-            args: [
+-                { name: "budget", description: Translation.tr("Warn when a turn passes this many tokens: /usage budget 300000, 0 for never") },
+-            ],
++            // No args list: it would offer "budget" and Enter would accept it, so a plain /usage could not run.
++            description: Translation.tr("The 9router quota tracker, and the tokens this OpenCode chat used. /usage budget 300000 warns past that many tokens in a turn, 0 for never"),
+             execute: args => root.opencodeOnly(() => {
+                 if (args[0] === "budget") Ai.setOpencodeBudget(args[1]);
+                 else Ai.showOpencodeUsage();
+@@ -169,6 +195,11 @@
+             execute: args => root.opencodeOnly(() => Ai.resumeOpencodeChat(parseInt(args[0])))
+         },
+         {
++            name: "compact",
++            description: Translation.tr("Summarize this chat to free its context: a short summary replaces the earlier turns"),
++            execute: () => root.opencodeOnly(() => Ai.compactOpencode())
++        },
++        {
+             name: "diff",
+             description: Translation.tr("Show the files this OpenCode chat changed"),
+             execute: () => root.opencodeOnly(() => Ai.showOpencodeDiff())
+@@ -375,54 +406,16 @@
+         messageListView.positionViewAtEnd();
+     }
+ 
+-    // The local 9router (decolua/9router). ~/.local/bin/9router-ctl starts and stops it and
+-    // prints its state as JSON. It listens on 127.0.0.1 only and nothing starts it on boot.
+-    QtObject {
+-        id: router
+-        property bool running: false
+-        property bool busy: false
+-        property string error: ""
+-        property string url: "http://127.0.0.1:20128"
+-        property bool report: false // Say the result in the chat, for /router
+-        property string action: ""
+-        function run(what, reportIt) {
+-            if (routerProc.running) return;
+-            router.action = what;
+-            router.report = reportIt;
+-            router.busy = what !== "status";
+-            routerProc.command = [`${Quickshell.env("HOME")}/.local/bin/9router-ctl`, what];
+-            routerProc.running = true;
+-        }
+-    }
+-
+-    Process {
+-        id: routerProc
+-        stdout: StdioCollector {
+-            id: routerOut
+-            onStreamFinished: {
+-                let state = {};
+-                try {
+-                    state = JSON.parse(routerOut.text);
+-                } catch (e) {
+-                    state = { "running": false, "error": Translation.tr("9router-ctl gave no answer") };
+-                }
+-                router.running = state.running === true;
+-                router.error = state.error ?? "";
+-                if (state.url) router.url = state.url;
+-                router.busy = false;
+-                if (!router.report) return;
+-                const message = router.error.length > 0 ? Translation.tr("9router: %1").arg(router.error)
+-                    : router.running ? Translation.tr("9router is running at %1. Its dashboard: %2router open").arg(router.url).arg(root.commandPrefix)
+-                    : Translation.tr("9router is stopped");
+-                Ai.addMessage(message, Ai.interfaceRole);
+-            }
+-        }
+-        onExited: (exitCode, exitStatus) => {
+-            if (exitCode !== 0 && routerOut.text.length === 0) {
+-                router.busy = false;
+-                router.running = false;
+-                router.error = Translation.tr("9router-ctl failed (exit %1)").arg(exitCode);
+-            }
++    // The local 9router: its state is shared with the 9router tab, see services/NineRouter.qml
++    readonly property var router: NineRouter
++    Connections {
++        target: NineRouter
++        function onFinished(report) {
++            if (!report) return;
++            const message = router.error.length > 0 ? Translation.tr("9router: %1").arg(router.error)
++                : router.running ? Translation.tr("9router is running at %1. Its dashboard: %2router open").arg(router.url).arg(root.commandPrefix)
++                : Translation.tr("9router is stopped");
++            Ai.addMessage(message, Ai.interfaceRole);
+         }
+     }
+ 
+@@ -690,7 +683,7 @@
+ 
+             PagePlaceholder {
+                 z: 2
+-                shown: Ai.messageIDs.length === 0 && !agentsPanel.shown
++                shown: Ai.messageIDs.length === 0 && !agentsPanel.shown && !routerPanel.shown && !projectPanel.shown
+                 icon: "neurology"
+                 iconComponent: PixelCortex {
+                     pixel: 5
+@@ -713,6 +706,18 @@
+                 anchors.fill: parent
+                 inputField: root.inputField
+             }
++
++            RouterPanel {
++                id: routerPanel
++                z: 4
++                anchors.fill: parent
++            }
++
++            ProjectPanel {
++                id: projectPanel
++                z: 4
++                anchors.fill: parent
++            }
+         }
+ 
+         DescriptionBox {
+@@ -1192,7 +1197,11 @@
+                     icon: "smart_toy"
+                     text: Ai.opencodeAgent === "plan" ? Translation.tr("Plan") : Translation.tr("Build")
+                     tooltipText: Translation.tr("Agents: switch, call, watch and create them")
+-                    onClicked: agentsPanel.shown = !agentsPanel.shown
++                    onClicked: {
++                        routerPanel.shown = false;
++                        projectPanel.shown = false;
++                        agentsPanel.shown = !agentsPanel.shown;
++                    }
+                 }
+ 
+                 ApiInputBoxIndicator {
+@@ -1201,11 +1210,11 @@
+                     icon: "folder"
+                     readonly property string folderName: Ai.opencodeFolder.length > 0 ? Ai.opencodeFolder.split("/").pop() : ".agents"
+                     text: folderName.length > 18 ? `${folderName.slice(0, 17)}…` : folderName
+-                    tooltipText: Translation.tr("Project folder: %1\nClick to choose another").arg(Ai.opencodeFolder.length > 0 ? Ai.opencodeFolder : "~/.agents")
++                    tooltipText: Translation.tr("Project folder: %1\nClick for the project panel: instructions, memory, skills, new project").arg(Ai.opencodeFolder.length > 0 ? Ai.opencodeFolder : "~/.agents")
+                     onClicked: {
+-                        messageInputField.text = `${root.commandPrefix}project `;
+-                        messageInputField.cursorPosition = messageInputField.text.length;
+-                        messageInputField.forceActiveFocus();
++                        agentsPanel.shown = false;
++                        routerPanel.shown = false;
++                        projectPanel.shown = !projectPanel.shown;
+                     }
+                 }
+ 
+@@ -1215,15 +1224,15 @@
+                     text: router.busy ? (router.action === "stop" ? Translation.tr("Stopping…") : Translation.tr("Starting…"))
+                         : router.running ? Translation.tr("9router on") : Translation.tr("9router off")
+                     tooltipText: router.error.length > 0
+-                        ? Translation.tr("9router: %1\nClick to try again").arg(router.error)
++                        ? Translation.tr("9router: %1\nClick to open its panel").arg(router.error)
+                         : router.running
+-                        ? Translation.tr("9router is running at %1\nClick to open its dashboard\nStop it with %2router stop").arg(router.url).arg(root.commandPrefix)
++                        ? Translation.tr("9router is running at %1\nClick for its panel: switch, today, quota").arg(router.url)
+                             + (Ai.routerUsage?.today ? `\n\n${Ai.routerSummaryLines()}` : "")
+-                        : Translation.tr("9router, the local AI router, is stopped\nClick to start it")
++                        : Translation.tr("9router, the local AI router, is stopped\nClick for its panel to start it")
+                     onClicked: {
+-                        if (router.busy) return;
+-                        if (router.running) Qt.openUrlExternally(`${router.url}/dashboard`);
+-                        else router.run("start", false);
++                        agentsPanel.shown = false;
++                        projectPanel.shown = false;
++                        routerPanel.shown = !routerPanel.shown;
+                     }
+                 }
+ 
+--- /dev/null
++++ b/services/NineRouter.qml
+@@ -0,0 +1,98 @@
++pragma Singleton
++pragma ComponentBehavior: Bound
++
++import Quickshell
++import Quickshell.Io
++import QtQuick
++
++/**
++ * The local 9router (decolua/9router). ~/.local/bin/9router-ctl starts and stops it and prints its
++ * state as JSON. It listens on 127.0.0.1 only and nothing starts it on boot. One copy of the state,
++ * shared by the AI tab's chip and the 9router tab.
++ */
++Singleton {
++    id: root
++    property bool running: false
++    property bool busy: false
++    property string error: ""
++    property string url: "http://127.0.0.1:20128"
++    property bool report: false // Say the result in the chat, for /router
++    property string action: ""
++    signal finished(bool report) // After each run, once the state above is updated
++
++    // Headroom, the context-compressing proxy 9router calls (9router-ctl headroom ...)
++    property bool headroomRunning: false
++    property bool headroomBusy: false
++    property string headroomVersion: ""
++    property string headroomError: ""
++    property string headroomAction: ""
++    function runHeadroom(what) {
++        if (headroomProc.running) return;
++        root.headroomAction = what;
++        root.headroomBusy = what !== "status";
++        headroomProc.command = [`${Quickshell.env("HOME")}/.local/bin/9router-ctl`, "headroom", what];
++        headroomProc.running = true;
++    }
++
++    function run(what, reportIt) {
++        if (routerProc.running) return;
++        root.action = what;
++        root.report = reportIt;
++        root.busy = what !== "status";
++        routerProc.command = [`${Quickshell.env("HOME")}/.local/bin/9router-ctl`, what];
++        routerProc.running = true;
++    }
++
++    Process {
++        id: headroomProc
++        stdout: StdioCollector {
++            id: headroomOut
++            onStreamFinished: {
++                let state = {};
++                try {
++                    state = JSON.parse(headroomOut.text);
++                } catch (e) {
++                    state = { "running": false, "error": Translation.tr("9router-ctl gave no answer") };
++                }
++                root.headroomRunning = state.running === true;
++                root.headroomVersion = state.version ?? "";
++                root.headroomError = state.error ?? "";
++                root.headroomBusy = false;
++            }
++        }
++        onExited: (exitCode, exitStatus) => {
++            if (exitCode !== 0 && headroomOut.text.length === 0) {
++                root.headroomBusy = false;
++                root.headroomRunning = false;
++                root.headroomError = Translation.tr("9router-ctl failed (exit %1)").arg(exitCode);
++            }
++        }
++    }
++
++    Process {
++        id: routerProc
++        stdout: StdioCollector {
++            id: routerOut
++            onStreamFinished: {
++                let state = {};
++                try {
++                    state = JSON.parse(routerOut.text);
++                } catch (e) {
++                    state = { "running": false, "error": Translation.tr("9router-ctl gave no answer") };
++                }
++                root.running = state.running === true;
++                root.error = state.error ?? "";
++                if (state.url) root.url = state.url;
++                root.busy = false;
++                root.finished(root.report);
++            }
++        }
++        onExited: (exitCode, exitStatus) => {
++            if (exitCode !== 0 && routerOut.text.length === 0) {
++                root.busy = false;
++                root.running = false;
++                root.error = Translation.tr("9router-ctl failed (exit %1)").arg(exitCode);
++            }
++        }
++    }
++}
+--- /dev/null
++++ b/modules/ii/sidebarLeft/aiChat/RouterPanel.qml
+@@ -0,0 +1,268 @@
++import qs.modules.common
++import qs.modules.common.widgets
++import qs.services
++import QtQuick
++import QtQuick.Layouts
++
++/**
++ * 9router in one place, like the agents panel is for agents: a switch to start or stop it,
++ * today's numbers, which token savers are on, and shortcuts to the dashboard and the quota tracker.
++ * The router object (state and start/stop) lives in AiChat.qml.
++ */
++Rectangle {
++    id: root
++    property bool shown: false
++    property var router: NineRouter
++    property bool showClose: true // The 9router tab has no panel to close
++
++    visible: shown
++    color: Appearance.colors.colLayer1Base // Solid, so the chat behind it never shows through
++    onShownChanged: {
++        if (!shown) return;
++        root.router.run("status", false);
++        root.router.runHeadroom("status");
++        Ai.refreshRouterUsage();
++    }
++
++    readonly property var today: Ai.routerUsage?.today
++    readonly property var savers: Ai.routerUsage?.savers ?? ({})
++
++    component SectionTitle: StyledText {
++        Layout.fillWidth: true
++        Layout.topMargin: 10
++        wrapMode: Text.Wrap
++        font.pixelSize: Appearance.font.pixelSize.small
++        color: Appearance.colors.colOnSurfaceVariant
++    }
++
++    component PanelButton: RippleButton {
++        id: panelButton
++        property string label
++        property string tooltip: ""
++        implicitHeight: 32
++        implicitWidth: panelButtonText.implicitWidth + 24
++        buttonRadius: height / 2
++        colBackground: Appearance.colors.colLayer3
++        colBackgroundHover: Appearance.colors.colLayer3Hover
++        colRipple: Appearance.colors.colLayer3Active
++        contentItem: StyledText {
++            id: panelButtonText
++            horizontalAlignment: Text.AlignHCenter
++            verticalAlignment: Text.AlignVCenter
++            font.pixelSize: Appearance.font.pixelSize.small
++            color: Appearance.colors.colOnLayer2
++            text: panelButton.label
++        }
++        StyledToolTip {
++            extraVisibleCondition: panelButton.tooltip.length > 0
++            text: panelButton.tooltip
++        }
++    }
++
++    component InfoRow: Rectangle {
++        id: infoRow
++        property string label
++        property string value
++        Layout.fillWidth: true
++        implicitHeight: infoRowLayout.implicitHeight + 16
++        radius: Appearance.rounding.small
++        color: Appearance.colors.colLayer2
++        RowLayout {
++            id: infoRowLayout
++            anchors {
++                left: parent.left
++                right: parent.right
++                verticalCenter: parent.verticalCenter
++                margins: 10
++            }
++            spacing: 10
++            StyledText {
++                color: Appearance.colors.colOnLayer1
++                text: infoRow.label
++            }
++            StyledText {
++                Layout.fillWidth: true
++                horizontalAlignment: Text.AlignRight
++                wrapMode: Text.Wrap
++                textFormat: Text.PlainText
++                font.pixelSize: Appearance.font.pixelSize.smaller
++                color: Appearance.colors.colOnSurfaceVariant
++                text: infoRow.value
++            }
++        }
++    }
++
++    StyledFlickable {
++        anchors.fill: parent
++        anchors.margins: 12
++        clip: true
++        contentHeight: panelColumn.implicitHeight
++
++        ColumnLayout {
++            id: panelColumn
++            width: parent.width
++            spacing: 6
++
++            RowLayout {
++                Layout.fillWidth: true
++                StyledText {
++                    Layout.fillWidth: true
++                    font.pixelSize: Appearance.font.pixelSize.larger
++                    color: Appearance.colors.colOnLayer1
++                    text: Translation.tr("9router")
++                }
++                PanelButton {
++                    visible: root.showClose
++                    label: Translation.tr("Close")
++                    onClicked: root.shown = false
++                }
++            }
++
++            Rectangle { // The switch
++                Layout.fillWidth: true
++                implicitHeight: switchRow.implicitHeight + 16
++                radius: Appearance.rounding.small
++                color: Appearance.colors.colLayer2
++                RowLayout {
++                    id: switchRow
++                    anchors {
++                        left: parent.left
++                        right: parent.right
++                        verticalCenter: parent.verticalCenter
++                        margins: 10
++                    }
++                    spacing: 10
++                    ColumnLayout {
++                        Layout.fillWidth: true
++                        spacing: 0
++                        StyledText {
++                            color: Appearance.colors.colOnLayer1
++                            text: root.router.busy ? (root.router.action === "stop" ? Translation.tr("Stopping…") : Translation.tr("Starting…"))
++                                : root.router.running ? Translation.tr("On") : Translation.tr("Off")
++                        }
++                        StyledText {
++                            Layout.fillWidth: true
++                            wrapMode: Text.Wrap
++                            textFormat: Text.PlainText
++                            font.pixelSize: Appearance.font.pixelSize.smaller
++                            color: root.router.error.length > 0 ? Appearance.colors.colError : Appearance.colors.colOnSurfaceVariant
++                            text: root.router.error.length > 0 ? root.router.error
++                                : root.router.running ? Translation.tr("The local AI router is running at %1").arg(root.router.url)
++                                : Translation.tr("Stopped. Models that go through 9router don't work until it starts")
++                        }
++                    }
++                    StyledSwitch {
++                        id: routerSwitch
++                        enabled: !root.router.busy
++                        checked: root.router.running
++                        onClicked: {
++                            root.router.run(checked ? "start" : "stop", false);
++                            checked = Qt.binding(() => root.router.running); // The switch follows the real state, not the click
++                        }
++                        StyledToolTip {
++                            text: routerSwitch.checked ? Translation.tr("Click to stop 9router") : Translation.tr("Click to start 9router")
++                        }
++                    }
++                }
++            }
++
++            RowLayout {
++                spacing: 6
++                PanelButton {
++                    label: Translation.tr("Open dashboard")
++                    tooltip: Translation.tr("Opens 9router's dashboard in the browser")
++                    enabled: root.router.running
++                    onClicked: Qt.openUrlExternally(`${root.router.url}/dashboard`)
++                }
++                PanelButton {
++                    label: Translation.tr("Quota tracker")
++                    tooltip: Translation.tr("Posts each account's limits and resets in the chat, like /usage")
++                    enabled: root.router.running
++                    onClicked: {
++                        Ai.showQuotaTracker();
++                        root.shown = false;
++                    }
++                }
++            }
++
++            Rectangle { // Headroom: compresses long tool results and context before they are sent
++                Layout.fillWidth: true
++                implicitHeight: headroomRow.implicitHeight + 16
++                radius: Appearance.rounding.small
++                color: Appearance.colors.colLayer2
++                RowLayout {
++                    id: headroomRow
++                    anchors {
++                        left: parent.left
++                        right: parent.right
++                        verticalCenter: parent.verticalCenter
++                        margins: 10
++                    }
++                    spacing: 10
++                    ColumnLayout {
++                        Layout.fillWidth: true
++                        spacing: 0
++                        StyledText {
++                            color: Appearance.colors.colOnLayer1
++                            text: root.router.headroomBusy ? (root.router.headroomAction === "stop" ? Translation.tr("Headroom: stopping…") : Translation.tr("Headroom: starting…"))
++                                : root.router.headroomRunning ? Translation.tr("Headroom: on") : Translation.tr("Headroom: off")
++                        }
++                        StyledText {
++                            Layout.fillWidth: true
++                            wrapMode: Text.Wrap
++                            textFormat: Text.PlainText
++                            font.pixelSize: Appearance.font.pixelSize.smaller
++                            color: root.router.headroomError.length > 0 ? Appearance.colors.colError : Appearance.colors.colOnSurfaceVariant
++                            text: root.router.headroomError.length > 0 ? root.router.headroomError
++                                : root.router.headroomRunning ? Translation.tr("Compresses long tool results and context before 9router sends them (version %1)").arg(root.router.headroomVersion)
++                                : Translation.tr("Stopped. 9router sends requests uncompressed and logs a skipped line each time")
++                        }
++                    }
++                    StyledSwitch {
++                        id: headroomSwitch
++                        enabled: !root.router.headroomBusy && root.router.headroomError.indexOf("not installed") < 0
++                        checked: root.router.headroomRunning
++                        onClicked: {
++                            root.router.runHeadroom(checked ? "start" : "stop");
++                            checked = Qt.binding(() => root.router.headroomRunning); // Follows the real state, not the click
++                        }
++                        StyledToolTip {
++                            text: headroomSwitch.checked ? Translation.tr("Click to stop Headroom") : Translation.tr("Click to start Headroom")
++                        }
++                    }
++                }
++            }
++
++            SectionTitle {
++                visible: root.router.running && root.today !== undefined
++                text: Translation.tr("Today")
++            }
++            InfoRow {
++                visible: root.router.running && root.today !== undefined
++                label: Translation.tr("Requests")
++                value: `${root.today?.requests ?? 0}`
++            }
++            InfoRow {
++                visible: root.router.running && root.today !== undefined
++                label: Translation.tr("Tokens")
++                value: Translation.tr("%1 sent · %2 written").arg(Ai.shortTokens(root.today?.promptTokens ?? 0)).arg(Ai.shortTokens(root.today?.completionTokens ?? 0))
++            }
++            InfoRow {
++                visible: root.router.running && Object.keys(root.today?.byProvider ?? {}).length > 0
++                label: Translation.tr("By provider")
++                value: Object.entries(root.today?.byProvider ?? {}).sort(([, a], [, b]) => b.requests - a.requests)
++                    .map(([name, provider]) => `${name} ${provider.requests}`).join(" · ")
++            }
++
++            SectionTitle {
++                visible: root.today !== undefined
++                text: Translation.tr("Token savers")
++            }
++            InfoRow {
++                visible: root.today !== undefined
++                label: Translation.tr("On")
++                value: Object.entries(root.savers).filter(([, on]) => on).map(([name]) => name).join(", ") || Translation.tr("none")
++            }
++        }
++    }
++}
+--- /dev/null
++++ b/modules/ii/sidebarLeft/aiChat/ProjectPanel.qml
+@@ -0,0 +1,443 @@
++import qs.modules.common
++import qs.modules.common.widgets
++import qs.services
++import QtQuick
++import QtQuick.Layouts
++
++/**
++ * What the models know about your work, in one place: the project folder (and a new one from
++ * scratch), its AGENTS.md instructions, the facts every new chat starts with, and the skills found.
++ * Two buttons ask the model to learn from the chat. Everything it shows is plain text, because it
++ * comes from files a model can write.
++ */
++Rectangle {
++    id: root
++    property bool shown: false
++    property var info: null // From opencode-tab project-info: folder, instructions, skills
++    property var facts: []
++    property var knownFolders: []
++    property var grants: [] // Files and folders models may always read
++    property string panelError: ""
++    readonly property int factLimit: 50
++
++    readonly property string folder: root.info?.folder ?? (Ai.opencodeFolder.length > 0 ? Ai.opencodeFolder : "~/.agents")
++    readonly property string savedInstructions: root.info?.instructions ?? ""
++    readonly property bool dirty: instructionsField.text !== root.savedInstructions
++
++    visible: shown
++    color: Appearance.colors.colLayer1Base // Solid, so the chat behind it never shows through
++    onShownChanged: {
++        if (shown) refresh();
++    }
++
++    // One helper process at a time, so each step starts the next
++    function refresh() {
++        root.panelError = "";
++        Ai.runAgentTool(["project-info", Ai.opencodeFolder], info => {
++            root.info = info;
++            instructionsField.text = info.instructions ?? "";
++            Ai.runAgentTool(["memory"], facts => {
++                root.facts = facts;
++                Ai.runAgentTool(["folders"], folders => {
++                    root.knownFolders = folders;
++                    Ai.runAgentTool(["access-list"], grants => root.grants = grants, () => {});
++                }, () => {});
++            }, error => root.panelError = error);
++        }, error => root.panelError = error);
++    }
++
++    function saveInstructions() {
++        root.panelError = "";
++        Ai.runAgentTool(["project-save", root.folder, instructionsField.text], info => {
++            root.info = info;
++            instructionsField.text = info.instructions ?? "";
++        }, error => root.panelError = error);
++    }
++
++    function createProject() {
++        root.panelError = "";
++        Ai.runAgentTool(["project-new", newNameField.text.trim()], folder => {
++            newNameField.text = "";
++            root.shown = false;
++            Ai.chooseOpencodeFolder(folder); // A new chat in the new folder
++        }, error => root.panelError = error);
++    }
++
++    function addGrant(access) {
++        root.panelError = "";
++        Ai.runAgentTool(["access-add", grantField.text.trim(), access], grants => {
++            grantField.text = "";
++            root.grants = grants;
++        }, error => root.panelError = error);
++    }
++
++    function addCommand() {
++        root.panelError = "";
++        Ai.runAgentTool(["access-add", Ai.opencodeFolder, "run", commandField.text.trim()], grants => {
++            commandField.text = "";
++            root.grants = grants;
++        }, error => root.panelError = error);
++    }
++
++    function removeGrant(path) {
++        root.panelError = "";
++        Ai.runAgentTool(["access-remove", `${path}`], grants => root.grants = grants, error => root.panelError = error);
++    }
++
++    function addFact() {
++        root.panelError = "";
++        Ai.runAgentTool(["memory-add", factField.text], facts => {
++            factField.text = "";
++            root.facts = facts;
++        }, error => root.panelError = error);
++    }
++
++    function forgetFact(index) {
++        root.panelError = "";
++        Ai.runAgentTool(["memory-forget", `${index + 1}`], facts => root.facts = facts, error => root.panelError = error);
++    }
++
++    function askModel(prompt) {
++        root.shown = false;
++        Ai.sendUserMessage(prompt);
++    }
++
++    readonly property string instructionsTemplate: Translation.tr("# %1\n\n## What this is\nOne or two lines: what the project does and who it is for.\n\n## Stack\nLanguages, frameworks and tools it uses.\n\n## Commands\nHow to run, test and build it.\n\n## Conventions\nHow code is named and organised here, and what to copy when adding something new.\n\n## Don't\nThings that look right but break this project.\n")
++        .arg(root.folder.split("/").pop())
++
++    component SectionTitle: StyledText {
++        Layout.fillWidth: true
++        Layout.topMargin: 12
++        wrapMode: Text.Wrap
++        font.pixelSize: Appearance.font.pixelSize.small
++        color: Appearance.colors.colOnSurfaceVariant
++    }
++
++    component Hint: StyledText {
++        Layout.fillWidth: true
++        wrapMode: Text.Wrap
++        textFormat: Text.PlainText
++        font.pixelSize: Appearance.font.pixelSize.smaller
++        color: Appearance.colors.colOnSurfaceVariant
++    }
++
++    component PanelButton: RippleButton {
++        id: panelButton
++        property string label
++        property string tooltip: ""
++        implicitHeight: 32
++        implicitWidth: panelButtonText.implicitWidth + 24
++        buttonRadius: height / 2
++        colBackground: Appearance.colors.colLayer3
++        colBackgroundHover: Appearance.colors.colLayer3Hover
++        colRipple: Appearance.colors.colLayer3Active
++        contentItem: StyledText {
++            id: panelButtonText
++            horizontalAlignment: Text.AlignHCenter
++            verticalAlignment: Text.AlignVCenter
++            font.pixelSize: Appearance.font.pixelSize.small
++            color: Appearance.colors.colOnLayer2
++            text: panelButton.label
++        }
++        StyledToolTip {
++            extraVisibleCondition: panelButton.tooltip.length > 0
++            text: panelButton.tooltip
++        }
++    }
++
++    component Card: Rectangle {
++        default property alias content: cardColumn.data
++        Layout.fillWidth: true
++        implicitHeight: cardColumn.implicitHeight + 16
++        radius: Appearance.rounding.small
++        color: Appearance.colors.colLayer2
++        ColumnLayout {
++            id: cardColumn
++            anchors {
++                left: parent.left
++                right: parent.right
++                top: parent.top
++                margins: 8
++            }
++            spacing: 6
++        }
++    }
++
++    StyledFlickable {
++        anchors.fill: parent
++        anchors.margins: 12
++        clip: true
++        contentHeight: panelColumn.implicitHeight
++
++        ColumnLayout {
++            id: panelColumn
++            width: parent.width
++            spacing: 6
++
++            RowLayout {
++                Layout.fillWidth: true
++                StyledText {
++                    Layout.fillWidth: true
++                    font.pixelSize: Appearance.font.pixelSize.larger
++                    color: Appearance.colors.colOnLayer1
++                    text: Translation.tr("Project and context")
++                }
++                PanelButton {
++                    label: Translation.tr("Close")
++                    onClicked: root.shown = false
++                }
++            }
++            Hint {
++                text: Translation.tr("What the models read before they answer: the project's instructions, the facts you keep, and the skills they can use.")
++            }
++            StyledText {
++                visible: root.panelError.length > 0
++                Layout.fillWidth: true
++                textFormat: Text.PlainText
++                wrapMode: Text.Wrap
++                font.pixelSize: Appearance.font.pixelSize.small
++                color: Appearance.colors.colError
++                text: root.panelError
++            }
++
++            SectionTitle { text: Translation.tr("Folder") }
++            Card {
++                StyledText {
++                    Layout.fillWidth: true
++                    textFormat: Text.PlainText
++                    wrapMode: Text.WrapAnywhere
++                    color: Appearance.colors.colOnLayer1
++                    text: root.folder
++                }
++                Hint { text: Translation.tr("Models can read files here without asking. Another folder starts a new chat.") }
++                Flow {
++                    Layout.fillWidth: true
++                    spacing: 6
++                    Repeater {
++                        model: root.knownFolders.filter(path => path !== root.folder)
++                        delegate: PanelButton {
++                            required property string modelData
++                            label: modelData.split("/").pop() || modelData
++                            tooltip: Translation.tr("%1\nStarts a new chat here").arg(modelData)
++                            onClicked: {
++                                root.shown = false;
++                                Ai.chooseOpencodeFolder(modelData);
++                            }
++                        }
++                    }
++                }
++            }
++
++            SectionTitle { text: Translation.tr("New project") }
++            Card {
++                Hint { text: Translation.tr("Makes a folder in ~/.agents/projects with an AGENTS.md to fill in, and starts a chat there.") }
++                RowLayout {
++                    Layout.fillWidth: true
++                    spacing: 6
++                    MaterialTextField {
++                        id: newNameField
++                        Layout.fillWidth: true
++                        placeholderText: Translation.tr("Name, like my-app")
++                        onAccepted: root.createProject()
++                    }
++                    PanelButton {
++                        label: Translation.tr("Create")
++                        enabled: newNameField.text.trim().length > 0
++                        onClicked: root.createProject()
++                    }
++                }
++            }
++
++            SectionTitle { text: Translation.tr("Project instructions (AGENTS.md)") }
++            Card {
++                Hint {
++                    text: root.info && root.info.instructions === null
++                        ? Translation.tr("This folder has no AGENTS.md yet. Say what the project is, its commands and its rules, and every chat here starts knowing them.")
++                        : Translation.tr("Every chat in this folder reads this first. Keep it short and true. No secrets: hosted models read it.")
++                }
++                MaterialTextArea {
++                    id: instructionsField
++                    Layout.fillWidth: true
++                    Layout.preferredHeight: 180
++                    placeholderText: Translation.tr("What this project is, how to run it, what to avoid")
++                }
++                RowLayout {
++                    Layout.fillWidth: true
++                    spacing: 6
++                    PanelButton {
++                        visible: instructionsField.text.length === 0
++                        label: Translation.tr("Use a template")
++                        onClicked: instructionsField.text = root.instructionsTemplate
++                    }
++                    PanelButton {
++                        label: Translation.tr("Improve from this chat")
++                        tooltip: Translation.tr("Asks the model to compare AGENTS.md with what you did here and suggest edits. It changes nothing until you agree")
++                        enabled: !Ai.busy
++                        onClicked: root.askModel(Translation.tr("Read AGENTS.md in this project, then look back over this chat. Suggest short edits that would have saved us time: commands we had to find, conventions we had to explain, mistakes to avoid. Show them as a list. Do not change any file until I agree."))
++                    }
++                    Item { Layout.fillWidth: true }
++                    PanelButton {
++                        label: root.dirty ? Translation.tr("Save") : Translation.tr("Saved")
++                        enabled: root.dirty
++                        onClicked: root.saveInstructions()
++                    }
++                }
++            }
++
++            SectionTitle { text: Translation.tr("Memory: facts every new chat starts with (%1 of %2)").arg(root.facts.length).arg(root.factLimit) }
++            Card {
++                Repeater {
++                    model: root.facts
++                    delegate: RowLayout {
++                        id: factRow
++                        required property string modelData
++                        required property int index
++                        Layout.fillWidth: true
++                        spacing: 6
++                        StyledText {
++                            Layout.fillWidth: true
++                            textFormat: Text.PlainText
++                            wrapMode: Text.Wrap
++                            color: Appearance.colors.colOnLayer1
++                            text: factRow.modelData
++                        }
++                        PanelButton {
++                            label: "✕"
++                            tooltip: Translation.tr("Forget this fact")
++                            onClicked: root.forgetFact(factRow.index)
++                        }
++                    }
++                }
++                Hint {
++                    visible: root.facts.length === 0
++                    text: Translation.tr("Nothing yet. Add what the models should always know: your stack, how you like answers, rules for your projects.")
++                }
++                RowLayout {
++                    Layout.fillWidth: true
++                    spacing: 6
++                    MaterialTextField {
++                        id: factField
++                        Layout.fillWidth: true
++                        placeholderText: Translation.tr("A lasting fact or preference, one sentence")
++                        onAccepted: root.addFact()
++                    }
++                    PanelButton {
++                        label: Translation.tr("Add")
++                        enabled: factField.text.trim().length > 0
++                        onClicked: root.addFact()
++                    }
++                }
++                PanelButton {
++                    label: Translation.tr("Learn from this chat")
++                    tooltip: Translation.tr("Asks the model to pick lasting facts from this chat and save them. You approve each one")
++                    enabled: !Ai.busy
++                    onClicked: root.askModel(Translation.tr("Look back over this chat. Pick up to three lasting facts or preferences about me or my projects that a future chat should know. Save each with the memory_remember tool, one short sentence each. Skip anything private, temporary or already remembered. If there is nothing worth keeping, say so."))
++                }
++            }
++
++            SectionTitle { text: Translation.tr("Always allowed without asking (%1)").arg(root.grants.length) }
++            Card {
++                Hint {
++                    text: Translation.tr("Files and folders models can use without asking. Read: they only look. Read and change: they may also edit and write, but edits outside a project can't be undone. A folder covers everything inside it. Private files (.env, .ssh, keys) stay blocked. Same as /allow in the chat.")
++                }
++                Repeater {
++                    model: root.grants
++                    delegate: RowLayout {
++                        id: grantRow
++                        required property var modelData
++                        required property int index
++                        Layout.fillWidth: true
++                        spacing: 6
++                        StyledText {
++                            Layout.fillWidth: true
++                            textFormat: Text.PlainText
++                            wrapMode: Text.WrapAnywhere
++                            color: grantRow.modelData.exists ? Appearance.colors.colOnLayer1 : Appearance.colors.colOnSurfaceVariant
++                            text: grantRow.modelData.access === "run"
++                                ? Translation.tr("run: %1, in %2").arg(grantRow.modelData.command).arg(grantRow.modelData.path)
++                                : `${grantRow.modelData.access === "write" ? Translation.tr("read and change") : Translation.tr("read")}: ${grantRow.modelData.exists ? grantRow.modelData.path : Translation.tr("%1 (gone)").arg(grantRow.modelData.path)}`
++                        }
++                        PanelButton {
++                            label: "✕"
++                            tooltip: Translation.tr("Ask again before reading this")
++                            onClicked: root.removeGrant(`${grantRow.index + 1}`)
++                        }
++                    }
++                }
++                SectionTitle { text: Translation.tr("Commands the models may run here, without asking") }
++                Hint {
++                    text: Translation.tr("One simple command, like git status or npm test. It covers any arguments, in this project folder only. No pipes, redirects, $ or backticks, and never shells, interpreters, sudo or rm.")
++                }
++                RowLayout {
++                    Layout.fillWidth: true
++                    spacing: 6
++                    MaterialTextField {
++                        id: commandField
++                        Layout.fillWidth: true
++                        placeholderText: Translation.tr("A command, like git status")
++                        onAccepted: root.addCommand()
++                    }
++                    PanelButton {
++                        label: Translation.tr("Allow here")
++                        enabled: commandField.text.trim().length > 0
++                        onClicked: root.addCommand()
++                    }
++                }
++                Hint {
++                    visible: root.grants.length === 0
++                    text: Translation.tr("None. Add a path, or press \"Always allow reading this\" on a read request.")
++                }
++                RowLayout {
++                    Layout.fillWidth: true
++                    spacing: 6
++                    MaterialTextField {
++                        id: grantField
++                        Layout.fillWidth: true
++                        placeholderText: Translation.tr("A full path, like ~/Documents/notes")
++                        onAccepted: root.addGrant("read")
++                    }
++                    PanelButton {
++                        label: Translation.tr("Read")
++                        tooltip: Translation.tr("Models can read it without asking")
++                        enabled: grantField.text.trim().length > 0
++                        onClicked: root.addGrant("read")
++                    }
++                    PanelButton {
++                        label: Translation.tr("Read and change")
++                        tooltip: Translation.tr("Models can also edit and write it without asking. Edits outside a project can't be undone")
++                        enabled: grantField.text.trim().length > 0
++                        onClicked: root.addGrant("write")
++                    }
++                }
++            }
++
++            SectionTitle { text: Translation.tr("Skills the models can use (%1)").arg(root.info?.skills?.length ?? 0) }
++            Card {
++                Repeater {
++                    model: root.info?.skills ?? []
++                    delegate: ColumnLayout {
++                        id: skillRow
++                        required property var modelData
++                        Layout.fillWidth: true
++                        spacing: 0
++                        StyledText {
++                            Layout.fillWidth: true
++                            textFormat: Text.PlainText
++                            elide: Text.ElideRight
++                            color: Appearance.colors.colOnLayer1
++                            text: skillRow.modelData.name
++                        }
++                        Hint {
++                            visible: skillRow.modelData.description.length > 0
++                            text: skillRow.modelData.description
++                        }
++                    }
++                }
++                Hint {
++                    visible: (root.info?.skills?.length ?? 0) === 0
++                    text: Translation.tr("None found. Skills live in ~/.agents/skills, or in .agents/skills inside the project.")
++                }
++            }
++        }
++    }
++}

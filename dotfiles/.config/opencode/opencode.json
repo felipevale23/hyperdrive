@@ -1,6 +1,359 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "provider": {
+    "9router": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "9router",
+      "options": {
+        "baseURL": "http://127.0.0.1:20128/v1",
+        "apiKey": "{env:NINEROUTER_API_KEY}"
+      },
+      "models": {
+        "nvidia/mistralai/mistral-large-4-1t-a52b": {
+          "name": "Mistral Large 4 (9router)",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          },
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
+          }
+        },
+        "nvidia/minimaxai/minimax-m3.1-flash": {
+          "name": "MiniMax M3.1 Flash (9router)",
+          "limit": {
+            "context": 262144,
+            "output": 262144
+          },
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
+          }
+        },
+        "nvidia/nvidia/nemotron-3-ultra-550b-a55b": {
+          "name": "Nemotron 3 Ultra (9router)",
+          "limit": {
+            "context": 1000000,
+            "output": 65536
+          },
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
+          }
+        },
+        "kr/claude-sonnet-4.5": {
+          "name": "Claude Sonnet 4.5 (Kiro)",
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
+          },
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          }
+        },
+        "kr/claude-haiku-4.5": {
+          "name": "Claude Haiku 4.5 (Kiro)",
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
+          },
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          }
+        },
+        "kr/deepseek-3.2": {
+          "name": "DeepSeek 3.2 (Kiro)",
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
+          },
+          "limit": {
+            "context": 128000,
+            "output": 16000
+          }
+        },
+        "kr/glm-5": {
+          "name": "GLM-5 (Kiro)",
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
+          },
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          }
+        },
+        "kr/qwen3-coder-next": {
+          "name": "Qwen3 Coder Next (Kiro)",
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
+          },
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          }
+        },
+        "kr/minimax-m2.5": {
+          "name": "MiniMax M2.5 (Kiro)",
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
+          },
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          }
+        },
+        "gemini/gemini-3.6-flash": {
+          "name": "Gemini 3.6 Flash (9router)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
+          }
+        },
+        "gemini/gemini-3.5-flash-lite": {
+          "name": "Gemini 3.5 Flash Lite (9router)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          },
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
+          }
+        },
+        "chat-chain": {
+          "name": "Fast chat: Gemini 3.6 Flash, then Claude Haiku 4.5, then Mistral Large 4 (9router)",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          },
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
+          }
+        },
+        "advisor-chain": {
+          "name": "Advisor: Claude Sonnet 4.5, then GLM-5, DeepSeek 3.2, Nemotron 3 Ultra, Gemini Flash (9router)",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          },
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
+          }
+        },
+        "hypervisor": {
+          "name": "Hypervisor: Claude Opus 5.5, then Sonnet 5.5, Gemini 4 Argon, Claude Sonnet 4.5 (9router)",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          },
+          "variants": {
+            "off": {
+              "reasoningEffort": "none"
+            },
+            "think": {
+              "reasoningEffort": "low"
+            },
+            "deep": {
+              "reasoningEffort": "high"
+            }
+          }
+        },
+        "nvidia/minimaxai/minimax-m2.7": {
+          "name": "MiniMax M2.7 (NVIDIA)",
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          }
+        },
+        "nvidia/minimaxai/minimax-m3": {
+          "name": "MiniMax M3 (NVIDIA)",
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          }
+        },
+        "nvidia/z-ai/glm-5.2": {
+          "name": "GLM 5.2 (NVIDIA)",
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          }
+        },
+        "nvidia/deepseek-ai/deepseek-v4-pro": {
+          "name": "DeepSeek V4 Pro (NVIDIA)",
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          }
+        },
+        "nvidia/deepseek-ai/deepseek-v4-flash": {
+          "name": "DeepSeek V4 Flash (NVIDIA)",
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          }
+        },
+        "nvidia/moonshotai/kimi-k2.6": {
+          "name": "Kimi K2.6 (NVIDIA)",
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          }
+        },
+        "ag/gemini-4-argon-high": {
+          "name": "Gemini 4 Argon High (Antigravity)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "ag/gemini-3.8-flash": {
+          "name": "Gemini 3.8 Flash (Antigravity)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "ag/gemini-pro-agent": {
+          "name": "Gemini 3.1 Pro (Antigravity)",
+          "limit": {
+            "context": 1048576,
+            "output": 65536
+          }
+        },
+        "ag/claude-sonnet-5-5": {
+          "name": "Claude Sonnet 5.5 (Antigravity)",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          }
+        },
+        "ag/claude-opus-5-5": {
+          "name": "Claude Opus 5.5 (Antigravity)",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          }
+        },
+        "ag/claude-sonnet-4-6": {
+          "name": "Claude Sonnet 4.6 (Antigravity)",
+          "limit": {
+            "context": 200000,
+            "output": 32000
+          }
+        },
+        "ag/gpt-oss-120b-medium": {
+          "name": "GPT-OSS 120B (Antigravity)",
+          "limit": {
+            "context": 128000,
+            "output": 32000
+          }
+        }
+      }
+    },
     "nvidia": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "NVIDIA",
@@ -41,18 +394,69 @@
           }
         }
       }
-    }
-  },
-  "model": "nvidia/mistralai/mistral-large-4-1t-a52b",
-  "agent": {
-    "build": {
-      "model": "nvidia/mistralai/mistral-large-4-1t-a52b"
     },
-    "plan": {
-      "model": "nvidia/nvidia/nemotron-3-ultra-550b-a55b"
+    "opencode": {
+      "models": {
+        "glm-5.3-flash-free": {
+          "name": "GLM 5.3 Flash (free)"
+        },
+        "deepseek-v4.1-flash-free": {
+          "name": "DeepSeek V4.1 Flash (free)"
+        }
+      }
+    },
+    "google": {
+      "models": {
+        "gemini-3.6-flash": {
+          "name": "Gemini 3.6 Flash"
+        }
+      }
     }
   },
+  "model": "9router/chat-chain",
   "permission": {
     "*": "ask"
+  },
+  "mcp": {
+    "servers": {
+      "context7": {
+        "type": "remote",
+        "url": "https://mcp.context7.com/mcp",
+        "oauth": false,
+        "codemode": false
+      },
+      "exa": {
+        "type": "remote",
+        "url": "https://mcp.exa.ai/mcp",
+        "oauth": false,
+        "codemode": false
+      },
+      "memory": {
+        "type": "local",
+        "command": [
+          "/home/felipevale/.local/bin/opencode-memory-mcp"
+        ],
+        "codemode": false
+      }
+    }
+  },
+  "agents": {
+    "build": {
+      "model": "9router/chat-chain"
+    },
+    "plan": {
+      "model": "9router/advisor-chain#deep"
+    },
+    "general": {
+      "model": "9router/chat-chain#off"
+    },
+    "explore": {
+      "model": "9router/chat-chain#off"
+    }
+  },
+  "compaction": {
+    "auto": true,
+    "prune": true,
+    "reserved": 20000
   }
 }

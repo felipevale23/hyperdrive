@@ -1,0 +1,276 @@
+diff --git a/modules/ii/sidebarLeft/AiChat.qml b/modules/ii/sidebarLeft/AiChat.qml
+index c14d0a4..fe5840b 100644
+--- a/modules/ii/sidebarLeft/AiChat.qml
++++ b/modules/ii/sidebarLeft/AiChat.qml
+@@ -51,7 +51,8 @@ Item {
+     function argumentCommand(text) {
+         const match = text.match(new RegExp(`^${root.commandPrefix}(\\w+) (\\S*)$`));
+         const cmd = match ? root.commandNamed(match[1]) : null;
+-        return cmd?.args ? { "cmd": cmd, "typed": match[2] } : null;
++        const args = typeof cmd?.args === "function" ? cmd.args() : cmd?.args;
++        return args ? { "cmd": cmd, "typed": match[2], "args": args } : null;
+     }
+     readonly property var instantCommands: ["agents", "approve", "reject", "history", "diff", "undo", "clear", "build", "plan"]
+     function commandNamed(name) {
+@@ -116,6 +117,31 @@ Item {
+                 router.run(action, true);
+             }
+         },
++        {
++            name: "think",
++            description: Translation.tr("How hard OpenCode thinks: auto (from each prompt), off, think or deep"),
++            args: [
++                { name: "auto", description: Translation.tr("Read each prompt: plain chat gets no thinking, reasoning questions some, \"think hard\" the most") },
++                { name: "off", description: Translation.tr("No thinking: fastest") },
++                { name: "think", description: Translation.tr("Some thinking for every message") },
++                { name: "deep", description: Translation.tr("Deep thinking for every message: slowest, most careful") },
++            ],
++            execute: args => root.opencodeOnly(() => Ai.setOpencodeThinking(args[0] ?? "auto"))
++        },
++        {
++            name: "regen",
++            description: Translation.tr("Regenerate the last reply, or the one you picked, with another model"),
++            args: () => Ai.modelList.map(id => ({ name: id, displayName: Ai.models[id]?.name?.replace("OpenCode: ", "") ?? id,
++                description: Ai.models[id]?.description ?? "" })),
++            execute: args => {
++                const target = Ai.regenerateTarget >= 0 ? Ai.regenerateTarget : Ai.lastReplyIndex();
++                if (target < 0) {
++                    Ai.addMessage(Translation.tr("No reply to regenerate yet"), Ai.interfaceRole);
++                    return;
++                }
++                Ai.regenerate(target, args[0]);
++            }
++        },
+         {
+             name: "usage",
+             description: Translation.tr("Tokens this OpenCode chat used, by agent and model, and 9router today"),
+@@ -424,7 +450,7 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+         interval: 3000
+         repeat: true
+         triggeredOnStart: true
+-        running: GlobalStates.sidebarLeftOpen
++        running: GlobalStates.sidebarLeftOpen && Ai.currentModelIsLocal
+         onTriggered: if (!gpuProc.running) gpuProc.running = true
+     }
+ 
+@@ -589,20 +615,22 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+                         statusText: Ai.tokenCount.total
+                         description: Translation.tr("Total token count\nInput: %1\nOutput: %2").arg(Ai.tokenCount.input).arg(Ai.tokenCount.output)
+                     }
+-                    // This computer's load: matters once models run here
+-                    StatusSeparator {}
++                    // This computer's load, only while the model runs here
++                    StatusSeparator { visible: Ai.currentModelIsLocal }
+                     StatusItem {
++                        visible: Ai.currentModelIsLocal
+                         icon: "developer_board"
+                         statusText: Translation.tr("CPU %1%").arg(Math.round(ResourceUsage.cpuUsage * 100))
+                         description: Translation.tr("Processor in use")
+                     }
+                     StatusItem {
++                        visible: Ai.currentModelIsLocal
+                         icon: "memory"
+                         statusText: Translation.tr("RAM %1%").arg(Math.round(ResourceUsage.memoryUsedPercentage * 100))
+                         description: Translation.tr("Memory in use: %1 of %2").arg(ResourceUsage.kbToGbString(ResourceUsage.memoryUsed)).arg(ResourceUsage.maxAvailableMemoryString)
+                     }
+                     StatusItem {
+-                        visible: gpu.busy >= 0
++                        visible: Ai.currentModelIsLocal && gpu.busy >= 0
+                         icon: "display_settings"
+                         statusText: Translation.tr("GPU %1%").arg(gpu.busy)
+                         description: Translation.tr("Graphics card busy: %1%\nVideo memory: %2 of %3 GB").arg(gpu.busy).arg((gpu.vramUsed / 1073741824).toFixed(1)).arg((gpu.vramTotal / 1073741824).toFixed(1))
+@@ -794,8 +822,8 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+                 const chosen = root.suggestionList[suggestions.selectedIndex] ?? root.suggestionList[0];
+                 const found = root.argumentCommand(text);
+                 if (found) {
+-                    if (found.cmd.args.some(arg => arg.name === found.typed)) return false;
+-                    const arg = chosen.displayName ?? chosen.name.split(" ").pop();
++                    if (found.args.some(arg => arg.name === found.typed)) return false;
++                    const arg = chosen.name.split(" ").pop();
+                     messageInputField.clear();
+                     root.handleInput(`${root.commandPrefix}${found.cmd.name} ${arg}`);
+                     return true;
+@@ -901,9 +929,11 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+                                 // "/command partial": suggest that command's arguments
+                                 const found = root.argumentCommand(messageInputField.text);
+                                 const single = messageInputField.text.trim().split(/\s+/).length === 1;
+-                                root.suggestionList = found.cmd.args.filter(arg => arg.name.startsWith(found.typed)).map(arg => ({
++                                const typed = found.typed.toLowerCase();
++                                root.suggestionList = found.args.filter(arg => arg.name.toLowerCase().includes(typed)
++                                        || (arg.displayName ?? "").toLowerCase().includes(typed)).map(arg => ({
+                                     name: single ? `${root.commandPrefix}${found.cmd.name} ${arg.name}` : arg.name,
+-                                    displayName: arg.name,
++                                    displayName: arg.displayName ?? arg.name,
+                                     description: arg.description
+                                 }));
+                             } else if (messageInputField.text.startsWith(`${root.commandPrefix}model`)) {
+diff --git a/modules/ii/sidebarLeft/aiChat/AiMessage.qml b/modules/ii/sidebarLeft/aiChat/AiMessage.qml
+index 6e61070..f2eec4f 100644
+--- a/modules/ii/sidebarLeft/aiChat/AiMessage.qml
++++ b/modules/ii/sidebarLeft/aiChat/AiMessage.qml
+@@ -250,7 +250,14 @@ Rectangle {
+                 const parts = usage.agents.map(entry => Translation.tr("%1 on %2: %3 tokens, %4 steps")
+                     .arg(entry.agent).arg(entry.model.split("/").pop() || "?").arg(Ai.shortTokens(Ai.tokensProcessed(entry))).arg(entry.steps));
+                 const context = usage.context?.limit ? Translation.tr("context %1%").arg(Math.round(100 * usage.context.used / usage.context.limit)) : "";
+-                return [...parts, context].filter(part => part.length > 0).join("  ·  ");
++                const level = root.messageData?.thinkingLevel ?? "";
++                const thinking = {
++                    "off": Translation.tr("no thinking"),
++                    "think": Translation.tr("thinking"),
++                    "deep": Translation.tr("deep thinking"),
++                }[level];
++                const thought = thinking ? `${thinking} (${root.messageData.thinkingReason})` : "";
++                return [thought, ...parts, context].filter(part => part.length > 0).join("  ·  ");
+             }
+         }
+ 
+@@ -437,6 +444,22 @@ Rectangle {
+                             text: Translation.tr("Regenerate")
+                         }
+                     }
++                    AiMessageControlButton {
++                        id: regenWithButton
++                        buttonIcon: "swap_horiz"
++                        visible: messageData?.role === 'assistant' && !!root.messageInputField
++
++                        onClicked: {
++                            Ai.regenerateTarget = root.messageIndex;
++                            root.messageInputField.text = "/regen ";
++                            root.messageInputField.cursorPosition = root.messageInputField.text.length;
++                            root.messageInputField.forceActiveFocus();
++                        }
++
++                        StyledToolTip {
++                            text: Translation.tr("Regenerate with another model")
++                        }
++                    }
+ 
+                     AiMessageControlButton {
+                         id: copyButton
+diff --git a/services/Ai.qml b/services/Ai.qml
+index 7897b82..3382ffb 100644
+--- a/services/Ai.qml
++++ b/services/Ai.qml
+@@ -621,6 +621,14 @@ Singleton {
+     }
+ 
+     // OpenCode usage for the chat on screen: tokens processed so far, and how full the context is
++    readonly property var localProviders: ["local", "llamacpp", "llama.cpp", "ollama", "lmstudio"]
++    readonly property bool currentModelIsLocal: {
++        const model = root.models[root.currentModelId];
++        if (!model) return false;
++        if (model.local === true) return true;
++        return model.api_format === "opencode" && root.localProviders.includes((model.model ?? "").split("/")[0]);
++    }
++
+     property real opencodeChatTokens: 0
+     property var opencodeContext: null // { used, limit } from the last turn
+     // Today's 9router numbers and token savers, from 9router-ctl usage. Null until read
+@@ -1023,6 +1031,8 @@ Singleton {
+                 requester.currentStrategy.toolsOn = root.currentTool === "functions";
+                 requester.currentStrategy.agent = root.opencodeAgent;
+                 requester.currentStrategy.folder = root.opencodeFolder;
++                requester.currentStrategy.regenerateTurns = root.pendingRegenerateTurns;
++                root.pendingRegenerateTurns = 0;
+                 root.opencodeServerWanted = true;
+                 opencodeIdleTimer.restart();
+             }
+@@ -1163,18 +1173,54 @@ Singleton {
+         root.pendingFilePath = CF.FileUtils.trimFileProtocol(filePath);
+     }
+ 
+-    function regenerate(messageIndex) {
++    property int regenerateTarget: -1 // The reply the regenerate-with-model button picked, for /regen
++    property int pendingRegenerateTurns: 0
++
++    // MODEL, when given, is used from now on, as with /model
++    function regenerate(messageIndex, modelId) {
+         if (root.busy || messageIndex < 0 || messageIndex >= messageIDs.length) return;
+         const id = root.messageIDs[messageIndex];
+         const message = root.messageByID[id];
+         if (message.role !== "assistant") return;
++        if (modelId && modelId !== root.currentModelId) {
++            if (!root.models[modelId]) {
++                root.addMessage(Translation.tr("No model called %1").arg(modelId), root.interfaceRole);
++                return;
++            }
++            root.setModel(modelId, false);
++        }
++        // An OpenCode chat keeps its history in the session: drop the regenerated turn and every later one there too
++        const removed = root.messageIDs.slice(messageIndex).map(i => root.messageByID[i]);
++        root.pendingRegenerateTurns = root.apiStrategies.opencode.sessionId.length > 0
++            ? 1 + removed.filter(m => m.role === "user").length : 0;
+         // Remove all messages after this one
+         for (let i = root.messageIDs.length - 1; i >= messageIndex; i--) {
+             root.removeMessage(i);
+         }
++        root.regenerateTarget = -1;
+         requester.makeRequest();
+     }
+ 
++    function lastReplyIndex() {
++        for (let i = root.messageIDs.length - 1; i >= 0; i--) {
++            if (root.messageByID[root.messageIDs[i]].role === "assistant") return i;
++        }
++        return -1;
++    }
++
++    // /think MODE: auto reads each prompt; off, think and deep fix the level
++    function setOpencodeThinking(mode) {
++        runOpencode(["team-set", "thinking", String(mode ?? "")], team => {
++            const text = {
++                "auto": Translation.tr("Thinking: chosen from each prompt. Plain chat gets none, reasoning questions some, \"think hard\" the most"),
++                "off": Translation.tr("Thinking: off for every message"),
++                "think": Translation.tr("Thinking: some, for every message"),
++                "deep": Translation.tr("Thinking: deep, for every message. Slower"),
++            }[team.thinking] ?? team.thinking;
++            root.addMessage(text, root.interfaceRole);
++        });
++    }
++
+     function createFunctionOutputMessage(name, output, includeOutputInChat = true) {
+         return aiMessageComponent.createObject(root, {
+             "role": "user",
+diff --git a/services/ai/AiMessageData.qml b/services/ai/AiMessageData.qml
+index 68407a5..d74e859 100644
+--- a/services/ai/AiMessageData.qml
++++ b/services/ai/AiMessageData.qml
+@@ -24,6 +24,8 @@ QtObject {
+     property string systemFence // Random fence for what OpenCode's tab says itself, so a model can't print the same thing
+     property string currentStep // What OpenCode is doing right now
+     property var subagents: [] // One row per subagent: id, name, task, model, state, activity, tokens
++    property string thinkingLevel // OpenCode: off, think, deep or default, chosen for this turn
++    property string thinkingReason
+     property var usage: null // OpenCode: this turn's tokens by agent and model, and how full the context is
+     property bool visibleToUser: true
+ }
+diff --git a/services/ai/OpenCodeApiStrategy.qml b/services/ai/OpenCodeApiStrategy.qml
+index 99d413e..7f10d0b 100644
+--- a/services/ai/OpenCodeApiStrategy.qml
++++ b/services/ai/OpenCodeApiStrategy.qml
+@@ -47,11 +47,13 @@ ApiStrategy {
+ 
+     // The request is the helper, not curl. The message goes on stdin, so it has no size
+     // limit and stays out of the process list. exec lets the stop button reach the helper.
++    property int regenerateTurns: 0 // Set for one request: drop this many turns from the session first
++
+     function finalizeScriptContent(scriptContent: string): string {
+         let delimiter = "OPENCODE_TAB_END";
+         while (pendingText.includes(delimiter)) delimiter += "_X";
+         return "#!/usr/bin/env bash\n"
+-            + `exec ${shellQuote(helperPath)} send ${shellQuote(pendingModel)} ${shellQuote(sessionId)} ${toolsOn ? "tools" : "off"} ${shellQuote(agent)} ${shellQuote(folder)} <<'${delimiter}'\n`
++            + `${regenerateTurns > 0 ? `OPENCODE_TAB_REGEN=${regenerateTurns} ` : ""}exec ${shellQuote(helperPath)} send ${shellQuote(pendingModel)} ${shellQuote(sessionId)} ${toolsOn ? "tools" : "off"} ${shellQuote(agent)} ${shellQuote(folder)} <<'${delimiter}'\n`
+             + `${pendingText}\n${delimiter}\n`;
+     }
+ 
+@@ -301,6 +303,10 @@ ApiStrategy {
+             const output = event.tokens?.output ?? -1;
+             return { tokenUsage: { input: input, output: output, total: input + output } };
+         }
++        case "thinking": // How hard the main model thinks this turn, and why
++            message.thinkingLevel = event.level ?? "";
++            message.thinkingReason = event.reason ?? "";
++            return {};
+         case "turn_usage": // Sent just before the end: tokens by agent and model, and context fill
+             message.usage = { "agents": event.agents ?? [], "context": event.context ?? null };
+             return { turnUsage: message.usage };

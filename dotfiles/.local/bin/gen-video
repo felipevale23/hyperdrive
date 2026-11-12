@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Creates a ~5 s 720p video from a text prompt on a Google Colab GPU.
+#
+#   gen-video [--model wan|ltx] [--vertical] [--sound] [--seconds N] [--gpu L4|T4|A100|H100] "PROMPT" OUTPUT.mp4
+#
+# --model wan (default): Wan 2.2 TI2V-5B, silent, L4 by default.
+# --model ltx: LTX-2.5 distilled, video WITH synced audio (speech, effects, ambience), H100 by default
+#   (needs 40+ GB, so H100 or A100 only). LTX-2 Community License: free commercial use below ~$10M revenue.
+# --vertical makes 9:16 (704x1280) for Reels, Shorts and TikTok; the default is 16:9 (1280x704).
+# --sound (wan only) adds matching sound effects and ambience with MMAudio (weights CC-BY-NC: non-commercial).
+#   If that step fails, the silent video is still saved.
+# Uses Colab compute units while it runs. Returns at once: the job runs in the background,
+# sends a desktop notification when done, and always releases the Colab VM.
+# An existing file is never replaced.
+set -euo pipefail
+COLAB=~/.local/bin/colab
+REMOTE=~/.local/share/gen-video/wan_t2v.py
+SOUND=~/.local/share/gen-video/mmaudio_add.py
+LTX=~/.local/share/gen-video/ltx_t2v.py
+STATE=~/.local/state/gen-video
+usage='usage: gen-video [--model wan|ltx] [--vertical] [--sound] [--seconds N] [--gpu L4|T4|A100|H100] "PROMPT" OUTPUT.mp4'
+
+if [[ ${1:-} == --worker ]]; then
+  shift; prompt=$1 out=$2 gpu=$3 session=$4 vertical=$5 seconds=$6 sound=${7:-0} model=${8:-wan}
+  trap '"$COLAB" stop -s "$session" >/dev/null 2>&1 || true' EXIT
+  ok=0
+  "$COLAB" new -s "$session" --gpu "$gpu" &&
+  if [[ $model == ltx ]]; then
+    script=$LTX pkgs=("git+https://github.com/huggingface/diffusers" transformers accelerate imageio imageio-ffmpeg av)
+  else
+    script=$REMOTE pkgs=("diffusers>=0.35" transformers accelerate ftfy imageio imageio-ffmpeg)
+  fi
+  "$COLAB" install -s "$session" "${pkgs[@]}" &&
+  "$COLAB" exec -s "$session" --timeout 0 --env HF_HUB_DISABLE_IMPLICIT_TOKEN=1 --env "PROMPT=$prompt" --env "OUT=/content/out.mp4" \
+    --env "VERTICAL=$vertical" --env "SECONDS=$seconds" -f "$script" &&
+  { (( sound )) &&
+    "$COLAB" restart-kernel -s "$session" &&
+    "$COLAB" exec -s "$session" --timeout 0 --env HF_HUB_DISABLE_IMPLICIT_TOKEN=1 --env "PROMPT=$prompt" --env "IN=/content/out.mp4" \
+      --env "OUT=/content/out_sound.mp4" -f "$SOUND" &&
+    "$COLAB" download -s "$session" /content/out_sound.mp4 "$out" && [[ -s $out ]] && ok=2; } || true
+  (( ok == 2 )) || { rm -f "$out"; "$COLAB" download -s "$session" /content/out.mp4 "$out" && [[ -s $out ]] && ok=1; }
+  if (( ok == 1 && sound )); then echo "DONE $out (silent: sound step failed)"
+    notify-send -a gen-video "Video ready, without sound" "$out" || true
+  elif (( ok )); then echo "DONE $out"; notify-send -a gen-video "Video ready" "$out" || true
+  else echo "FAILED"; notify-send -u critical -a gen-video "Video failed" "See $STATE/$session.log" || true; fi
+  exit 0
+fi
+
+vertical=0 sound=0 seconds=5 gpu="" model=wan args=()
+while (( $# )); do
+  case $1 in
+    --vertical) vertical=1 ;;
+    --sound) sound=1 ;;
+    --model) model=${2:?$usage}; shift ;;
+    --seconds) seconds=${2:?$usage}; shift ;;
+    --gpu) gpu=${2:?$usage}; shift ;;
+    -h|--help) echo "$usage"; exit 0 ;;
+    *) args+=("$1") ;;
+  esac
+  shift
+done
+(( ${#args[@]} == 3 )) && gpu=${args[2]}  # old form: gen-video "PROMPT" OUT.mp4 GPU
+if (( ${#args[@]} < 2 )); then echo "$usage" >&2; exit 2; fi
+model=${model,,}
+[[ $model =~ ^(wan|ltx)$ ]] || { echo "error: --model takes wan or ltx" >&2; exit 2; }
+[[ -n $gpu ]] || { [[ $model == ltx ]] && gpu=H100 || gpu=L4; }
+gpu=${gpu^^}
+[[ $model == ltx && ! $gpu =~ ^(H100|A100)$ ]] && { echo "error: --model ltx needs --gpu H100 or A100" >&2; exit 2; }
+[[ $model == ltx ]] && sound=0  # LTX makes its own audio
+[[ $gpu =~ ^(L4|T4|A100|H100)$ ]] || { echo "error: unknown GPU $gpu" >&2; exit 2; }
+[[ $seconds =~ ^[0-9]+([.][0-9]+)?$ ]] && (( ${seconds%.*} >= 1 && ${seconds%.*} <= 10 )) ||
+  { echo "error: --seconds must be between 1 and 10" >&2; exit 2; }
+prompt=${args[0]} out=$(realpath -m "${args[1]}")
+[[ $out == *.mp4 ]] || out="$out.mp4"
+if [[ -e $out ]]; then echo "error: $out already exists" >&2; exit 1; fi
+[[ -x $COLAB ]] || { echo "error: colab CLI not found at $COLAB" >&2; exit 1; }
+mkdir -p "$STATE" "$(dirname "$out")"
+session="gv-$(date +%Y%m%d-%H%M%S)"
+setsid nohup "$0" --worker "$prompt" "$out" "$gpu" "$session" "$vertical" "$seconds" "$sound" "$model" >"$STATE/$session.log" 2>&1 < /dev/null &
+[[ $model == ltx ]] && eta="5-15" || eta="15-25"
+echo "started: $out ($model) will appear in about $eta minutes on $gpu$( (( sound )) && echo ', with sound') (log: $STATE/$session.log)"

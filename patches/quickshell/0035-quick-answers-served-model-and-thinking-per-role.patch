@@ -1,0 +1,66 @@
+diff --git a/modules/ii/sidebarLeft/aiChat/AgentsPanel.qml b/modules/ii/sidebarLeft/aiChat/AgentsPanel.qml
+index 265bc86..e23ab02 100644
+--- a/modules/ii/sidebarLeft/aiChat/AgentsPanel.qml
++++ b/modules/ii/sidebarLeft/aiChat/AgentsPanel.qml
+@@ -22,12 +22,17 @@ Rectangle {
+     property string teamOpen: "" // The role whose model list is showing
+ 
+     // The name opencode.json gives a model, e.g. "Advisor: Claude Sonnet 4.5, then GLM-5, …"
++    // A role's model can end in a thinking level, "9router/advisor-chain#deep"
+     function modelFullName(id) {
+-        return (Ai.opencodeTeam.models ?? []).find(model => model.id === id)?.name ?? id ?? "";
++        const [base, level] = (id ?? "").split("#");
++        const name = (Ai.opencodeTeam.models ?? []).find(model => model.id === base)?.name ?? base;
++        return level ? Translation.tr("%1, thinking: %2").arg(name).arg(level) : name;
+     }
+-    // Short enough for a button: a chain shows its name before the colon, "Advisor"
++    // Short enough for a button: a chain shows its name before the colon, "Advisor · deep"
+     function modelName(id) {
+-        return root.modelFullName(id).split(":")[0].replace(/ \(9router\)$/, "");
++        const [base, level] = (id ?? "").split("#");
++        const name = root.modelFullName(base).split(":")[0].replace(/ \(9router\)$/, "");
++        return level ? `${name} · ${level}` : name;
+     }
+ 
+     readonly property var primaryAgents: Ai.opencodeAgents.filter(agent => agent.mode === "primary")
+diff --git a/modules/ii/sidebarLeft/aiChat/AiMessage.qml b/modules/ii/sidebarLeft/aiChat/AiMessage.qml
+index f2eec4f..c0e1e8e 100644
+--- a/modules/ii/sidebarLeft/aiChat/AiMessage.qml
++++ b/modules/ii/sidebarLeft/aiChat/AiMessage.qml
+@@ -159,7 +159,8 @@ Rectangle {
+                 FadeLoader {
+                     id: loadingIndicatorLoader
+                     anchors.centerIn: parent
+-                    shown: (root.messageBlocks.length < 1) && (!root.messageData.done)
++                    // Not for a quick answer: OpenCode chose no thinking, so the reply is only a moment away
++                    shown: (root.messageBlocks.length < 1) && (!root.messageData.done) && root.messageData?.thinkingLevel !== "off"
+                     sourceComponent: Row {
+                         spacing: 10
+                         PixelCortex {
+@@ -257,7 +258,11 @@ Rectangle {
+                     "deep": Translation.tr("deep thinking"),
+                 }[level];
+                 const thought = thinking ? `${thinking} (${root.messageData.thinkingReason})` : "";
+-                return [thought, ...parts, context].filter(part => part.length > 0).join("  ·  ");
++                // Who really answered: a combo names a list, 9router says which model it used
++                const served = (usage.served ?? []).filter(entry => entry.ok)
++                    .map(entry => entry.requests > 1 ? `${entry.model} ×${entry.requests}` : entry.model);
++                const answered = served.length > 0 ? Translation.tr("answered by %1").arg(served.join(", ")) : "";
++                return [answered, thought, ...parts, context].filter(part => part.length > 0).join("  ·  ");
+             }
+         }
+ 
+diff --git a/services/ai/OpenCodeApiStrategy.qml b/services/ai/OpenCodeApiStrategy.qml
+index 7f10d0b..cc7d63d 100644
+--- a/services/ai/OpenCodeApiStrategy.qml
++++ b/services/ai/OpenCodeApiStrategy.qml
+@@ -308,7 +308,8 @@ ApiStrategy {
+             message.thinkingReason = event.reason ?? "";
+             return {};
+         case "turn_usage": // Sent just before the end: tokens by agent and model, and context fill
+-            message.usage = { "agents": event.agents ?? [], "context": event.context ?? null };
++            // served: the models 9router really used, in order, when the model is a combo like chat-chain
++            message.usage = { "agents": event.agents ?? [], "context": event.context ?? null, "served": event.served ?? [] };
+             return { turnUsage: message.usage };
+         case "budget":
+             addNote(message, "warning", qsTr("This turn has used %1 tokens, past the %2 budget. Stop it if it's running away. /usage budget changes the limit.")

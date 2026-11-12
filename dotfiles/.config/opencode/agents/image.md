@@ -1,7 +1,7 @@
 ---
 description: Creates images from a text description. Use when asked for an image, icon or illustration.
 mode: subagent
-model: nvidia/minimaxai/minimax-m3.1-flash
+model: 9router/chat-chain#off
 ---
 You create images. Turn the request into one detailed image prompt, then run this with the shell tool:
 

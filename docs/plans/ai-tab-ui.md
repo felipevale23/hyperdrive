@@ -76,7 +76,7 @@ card, a failed step that opens by itself, `/approve`, and the turn fits one scre
 - Unit tests: `tst_opencode.qml` and `tst_blocks.mjs`. A real model refused to print a fake card, so only the parser tests prove that case.
 - Not checked on screen: Tab focus on the card's buttons, Copy on a message with blocks, a saved chat, a subagent card.
 
-### Step 2: polish (patch `0026`)
+### Step 2: polish (patch `0027`)
 
 1. **Status pill** covers messages on scroll. On OpenCode models, take it out of the overlay. Tokens move to the Context panel in Part 2.
    Until then, reserve its height so it can't overlap.
@@ -90,7 +90,27 @@ card, a failed step that opens by itself, `/approve`, and the turn fits one scre
 
 **Done when** nothing overlaps or clips at 460 and 750 px, measured contrast passes, and every control has a hover state and a tooltip.
 
-### Step 3: `/resume` keeps the whole story (patch `0027`)
+**Status (2026-11-09):** done in patch `0027`. The status pill has its own row on OpenCode models, `/diff` shows one block per file
+headed by its name and `+N −M` (the `Index:`/`=====` lines are dropped for display only), edit cards say how much they change,
+scroll to bottom is a small corner icon, the Tool chip moved into `/tool`, and the tab's grey text uses `colOnSurfaceVariant`.
+Built with it, in the order applied:
+
+- `0028` 9router chip and `/router start|stop|open|status`, through `~/.local/bin/9router-ctl`.
+- `0029` the tab's OpenCode models go through the local 9router (`9router/...`), plus a direct Mistral for when it's stopped.
+- `0030` command completion: commands carry `args`, Enter finishes a half-typed command or argument, `/build` and `/plan`,
+  the `/` button is gone and long model names elide. The `/model` list says what each model is for and what it costs.
+- `0031` all four arrows move through suggestions; Up and Down go by rows of the real layout.
+- `0032` resource feedback: a usage line under each reply, context % and chat tokens in the pill, CPU, RAM and GPU,
+  `/usage` (and `/usage budget N`), a budget warning note, and 9router's day in the chip's tooltip.
+- `0033` model tiers: "Fast chat (auto fallback)" first; agents panel rows no longer overlap and gain a Hypervisor row.
+- `0034` thinking per prompt: no thinking for plain chat, some for reasoning questions, deep for "think hard" (EN and PT cues, `/think` to fix it), shown on the usage line; regenerate with another model (⇄ button, `/regen`) that replaces the turn in the OpenCode session; CPU, RAM and GPU only for local models.
+- `0035` quick answers show no waiting animation; the reply line says which model really answered a combo ("answered by …", from 9router's request history); the agents panel shows each role's thinking level ("Advisor · deep").
+  With it in the helper: plain chat goes without tools and retries through a hidden follow-up when the model answers NEEDS_TOOLS (Kiro keeps its own copy of the chat, so rewriting history didn't work); Context7 and Exa moved to a `research` subagent; per-role thinking (advisor and hypervisor `#deep`, subagents `#off`); and `opencode.json` uses `agents`, which OpenCode 2 reads (the old `agent` section was ignored).
+- `0036` a quick answer shows a Material UI-style three-bar skeleton with a sweeping light wave instead of the thinking animation; the chat is more compact: the hover actions float over the message's top-right corner instead of taking ~40 px under every message, and the gaps between messages and blocks are smaller. The message actions box is small and hangs just above your bubble (a reply: over its top-right corner), both on the same right edge. `0036a`: /usage also shows 9router's quota tracker.
+
+Not checked on screen: the `/model` hints, the reply usage line, the agents panel after the fix, and the chip tooltip.
+
+### Step 3: `/resume` keeps the whole story (patch `0037`)
 
 `messages()` in the helper drops tool parts, so a denied turn comes back as a question with no answer. Return tool parts and rebuild
 steps and answered cards from them. Old cards must come back answered and can't be actionable.
@@ -133,7 +153,7 @@ The tab keeps its role as a sidebar. It gets what you'd open the web app for, no
 | Providers, servers, plugins, integrations, export | Not in the tab. Keep using the web app or config | Keys stay in the keyring | Out |
 | Theme, fonts, shortcuts, notifications, language | Not needed: the shell owns these | | Out |
 
-### Step 4: panels (patch `0028`)
+### Step 4: panels (patch `0038`)
 
 A `SecondaryTabBar` under the header, shown only on OpenCode models. Direct models keep today's layout.
 
@@ -155,14 +175,14 @@ At the 750 px width (`Ctrl+O`), Changes and Files can show a list beside the con
 
 **Done when** panels switch by mouse and keyboard, the open chat survives switching, and direct models look unchanged.
 
-### Step 5: Chats panel (patch `0029`)
+### Step 5: Chats panel (patch `0039`)
 
 Replaces typing `/history` and `/resume N`. Chats grouped by folder, newest first, with a search box. Click to resume, and the folder comes
 with it. Rename through `PATCH /api/session/{id}`. Delete asks first and removes the journal. Keep the commands working.
 
 **Done when** the test chats can be deleted from the panel, and a chat in another folder opens with the right chip.
 
-### Step 6: Changes panel (patch `0030`)
+### Step 6: Changes panel (patch `0040`)
 
 The files this chat changed, each opening its diff, with undo for the last turn. In a git repo, a second view shows all uncommitted changes
 from `GET /api/vcs/diff`. In a plain folder only the chat's own view exists, because OpenCode has no snapshots there. Read-only otherwise:
@@ -170,13 +190,13 @@ no stage or commit buttons.
 
 **Done when** the numbers match `git diff` in a repo, and a plain folder shows the chat's changes with a clear note.
 
-### Step 7: Context panel (patch `0031`)
+### Step 7: Context panel (patch `0041`)
 
 Tokens against the model's limit, cost, model and agent, folder, and the todo list. Tokens leave the status pill here.
 
 **Done when** totals match the session in `opencode.db`.
 
-### Step 8: Files panel (patch `0032`)
+### Step 8: Files panel (patch `0042`)
 
 A tree of the chat's folder, a read-only viewer using the code block, and search. A click on "Add to message" inserts an `@` mention, so
 the normal checks run. New helper commands `list` and `read`, both limited by `safe_path`. Private files show with a padlock and no content.

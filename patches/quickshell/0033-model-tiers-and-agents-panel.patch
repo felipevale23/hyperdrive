@@ -1,0 +1,191 @@
+diff --git a/modules/ii/sidebarLeft/AiChat.qml b/modules/ii/sidebarLeft/AiChat.qml
+index 78454a6..c14d0a4 100644
+--- a/modules/ii/sidebarLeft/AiChat.qml
++++ b/modules/ii/sidebarLeft/AiChat.qml
+@@ -1188,7 +1188,7 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+                         ? Translation.tr("9router: %1\nClick to try again").arg(router.error)
+                         : router.running
+                         ? Translation.tr("9router is running at %1\nClick to open its dashboard\nStop it with %2router stop").arg(router.url).arg(root.commandPrefix)
+-                            + (Ai.routerUsage?.today ? `\n\n${Ai.routerSummary()}` : "")
++                            + (Ai.routerUsage?.today ? `\n\n${Ai.routerSummaryLines()}` : "")
+                         : Translation.tr("9router, the local AI router, is stopped\nClick to start it")
+                     onClicked: {
+                         if (router.busy) return;
+diff --git a/modules/ii/sidebarLeft/aiChat/AgentsPanel.qml b/modules/ii/sidebarLeft/aiChat/AgentsPanel.qml
+index 769f50e..265bc86 100644
+--- a/modules/ii/sidebarLeft/aiChat/AgentsPanel.qml
++++ b/modules/ii/sidebarLeft/aiChat/AgentsPanel.qml
+@@ -21,9 +21,14 @@ Rectangle {
+     property string panelError: ""
+     property string teamOpen: "" // The role whose model list is showing
+ 
+-    function modelName(id) {
++    // The name opencode.json gives a model, e.g. "Advisor: Claude Sonnet 4.5, then GLM-5, …"
++    function modelFullName(id) {
+         return (Ai.opencodeTeam.models ?? []).find(model => model.id === id)?.name ?? id ?? "";
+     }
++    // Short enough for a button: a chain shows its name before the colon, "Advisor"
++    function modelName(id) {
++        return root.modelFullName(id).split(":")[0].replace(/ \(9router\)$/, "");
++    }
+ 
+     readonly property var primaryAgents: Ai.opencodeAgents.filter(agent => agent.mode === "primary")
+     readonly property var subagents: Ai.opencodeAgents.filter(agent => agent.mode !== "primary")
+@@ -158,6 +163,7 @@ Rectangle {
+                 spacing: 8
+                 ColumnLayout {
+                     Layout.fillWidth: true
++                    Layout.minimumWidth: 140
+                     spacing: 0
+                     StyledText {
+                         Layout.fillWidth: true
+@@ -173,12 +179,20 @@ Rectangle {
+                     }
+                 }
+                 StyledSwitch {
++                    id: advisingSwitch
+                     visible: teamRow.canSwitch
+                     checked: Ai.opencodeTeam.advising ?? false
+                     onClicked: Ai.setOpencodeTeam("advising", checked ? "on" : "off", error => root.panelError = error)
++                    StyledToolTip {
++                        text: advisingSwitch.checked ? Translation.tr("On: the main agent asks the advisor before complex work") : Translation.tr("Off: the main agent never asks the advisor")
++                    }
+                 }
+                 PanelButton {
++                    Layout.maximumWidth: teamRow.width * 0.42
++                    maxWidth: teamRow.width * 0.42
+                     label: root.modelName(teamRow.modelId)
++                    tooltip: teamRow.canPick ? Translation.tr("%1\nClick to choose another").arg(root.modelFullName(teamRow.modelId))
++                        : Translation.tr("%1\nClick to choose another with /model").arg(root.modelFullName(teamRow.modelId))
+                     onClicked: {
+                         if (teamRow.canPick) root.teamOpen = teamRow.open ? "" : teamRow.role;
+                         else {
+@@ -198,7 +212,9 @@ Rectangle {
+                     model: Ai.opencodeTeam.models ?? []
+                     delegate: PanelButton {
+                         required property var modelData
+-                        label: modelData.name
++                        maxWidth: teamRowColumn.width
++                        label: modelData.name.split(":")[0]
++                        tooltip: modelData.name.includes(":") ? modelData.name : ""
+                         onClicked: {
+                             Ai.setOpencodeTeam(teamRow.role, modelData.id, error => root.panelError = error);
+                             root.teamOpen = "";
+@@ -212,8 +228,10 @@ Rectangle {
+     component PanelButton: RippleButton {
+         id: panelButton
+         property string label
++        property string tooltip: ""
++        property real maxWidth: Number.POSITIVE_INFINITY // Longer labels end in …
+         implicitHeight: 32
+-        implicitWidth: panelButtonText.implicitWidth + 24
++        implicitWidth: Math.min(panelButtonText.implicitWidth + 24, maxWidth)
+         buttonRadius: height / 2
+         colBackground: Appearance.colors.colLayer3
+         colBackgroundHover: Appearance.colors.colLayer3Hover
+@@ -224,8 +242,13 @@ Rectangle {
+             verticalAlignment: Text.AlignVCenter
+             font.pixelSize: Appearance.font.pixelSize.small
+             color: Appearance.colors.colOnLayer2
++            elide: Text.ElideRight
+             text: panelButton.label
+         }
++        StyledToolTip {
++            extraVisibleCondition: panelButton.tooltip.length > 0
++            text: panelButton.tooltip
++        }
+     }
+ 
+     StyledFlickable {
+@@ -259,21 +282,28 @@ Rectangle {
+             TeamRow {
+                 role: "main"
+                 label: Translation.tr("Main agent")
+-                hint: Translation.tr("Talks to you and does the work")
++                hint: Translation.tr("Talks to you and does the work; a fast model")
+                 modelId: Ai.models[Ai.currentModelId]?.model ?? ""
+                 canPick: false
+             }
+             TeamRow {
+                 role: "advisor"
+                 label: Translation.tr("Advisor")
+-                hint: Translation.tr("The main agent asks it before big or risky steps")
++                hint: Translation.tr("Asked for complex work: design, changes across files, risky steps")
+                 modelId: Ai.opencodeTeam.advisor ?? ""
+                 canSwitch: true
+             }
++            TeamRow {
++                role: "hypervisor"
++                visible: (Ai.opencodeTeam.hypervisor ?? "").length > 0
++                label: Translation.tr("Hypervisor")
++                hint: Translation.tr("Last word on decisions that are hard to undo; the advisor escalates to it")
++                modelId: Ai.opencodeTeam.hypervisor ?? ""
++            }
+             TeamRow {
+                 role: "subagents"
+                 label: Translation.tr("Subagents")
+-                hint: Translation.tr("Smaller jobs, usually a faster model")
++                hint: Translation.tr("Smaller jobs: searching, research, images, voice")
+                 modelId: Ai.opencodeTeam.subagents ?? ""
+             }
+ 
+diff --git a/services/Ai.qml b/services/Ai.qml
+index a99cfa7..7897b82 100644
+--- a/services/Ai.qml
++++ b/services/Ai.qml
+@@ -331,21 +331,24 @@ Singleton {
+         });
+     }
+ 
++    // Light, fast models first: they chat and hand complex work to the advisor (Claude Sonnet), and
++    // decisions that are hard to undo to the hypervisor (Claude Opus). The chains are 9router combos.
+     // Most go through the local 9router (provider "9router" in opencode.json), for its token
+     // savers and the Kiro models; start it with the 9router chip. The "direct" one skips it,
+     // so OpenCode still works while 9router is stopped.
+     function addOpencodeModels() {
+         [
+-            ["mistral-large-4", "Mistral Large 4", "9router/nvidia/mistralai/mistral-large-4-1t-a52b", "mistral-symbolic", "Recommended for everyday chat and small edits. Free (NVIDIA)"],
+-            ["minimax-m3.1-flash", "MiniMax M3.1 Flash", "9router/nvidia/minimaxai/minimax-m3.1-flash", "spark-symbolic", "Quick questions and light tasks; runs the subagents. Free (NVIDIA)"],
+-            ["nemotron-3-ultra", "Nemotron 3 Ultra", "9router/nvidia/nvidia/nemotron-3-ultra-550b-a55b", "spark-symbolic", "Planning, architecture and reviewing a plan; the advisor. Free (NVIDIA)"],
+-            ["claude-sonnet-4.5", "Claude Sonnet 4.5 (Kiro)", "9router/kr/claude-sonnet-4.5", "spark-symbolic", "Hardest coding: multi-file changes and debugging. Uses Kiro credits"],
+-            ["claude-haiku-4.5", "Claude Haiku 4.5 (Kiro)", "9router/kr/claude-haiku-4.5", "spark-symbolic", "Fast and capable for routine coding. Uses Kiro credits"],
+-            ["deepseek-3.2", "DeepSeek 3.2 (Kiro)", "9router/kr/deepseek-3.2", "spark-symbolic", "Step-by-step reasoning and maths. Uses Kiro credits"],
+-            ["glm-5", "GLM-5 (Kiro)", "9router/kr/glm-5", "spark-symbolic", "Coding and tool use, without Claude. Uses Kiro credits"],
++            ["fast-chat", "Fast chat (auto fallback)", "9router/chat-chain", "google-gemini-symbolic", "Recommended: Gemini 3.6 Flash, switching to Claude Haiku then Mistral if one fails. Asks the advisor (Claude Sonnet) when a task gets complex, and the hypervisor (Claude Opus) for decisions that are hard to undo"],
++            ["gemini-3.6-flash", "Gemini 3.6 Flash", "9router/gemini/gemini-3.6-flash", "google-gemini-symbolic", "Fast everyday chat with no fallback. Free tier (Gemini)"],
++            ["claude-haiku-4.5", "Claude Haiku 4.5 (Kiro)", "9router/kr/claude-haiku-4.5", "spark-symbolic", "Fast and steady everyday chat; asks the advisor when a task gets complex. Uses Kiro credits"],
++            ["claude-sonnet-4.5", "Claude Sonnet 4.5 (Kiro)", "9router/kr/claude-sonnet-4.5", "spark-symbolic", "Hardest coding: multi-file changes and debugging. The advisor. Uses Kiro credits"],
+             ["qwen3-coder-next", "Qwen3 Coder Next (Kiro)", "9router/kr/qwen3-coder-next", "spark-symbolic", "Coding, without Claude. Uses Kiro credits"],
++            ["glm-5", "GLM-5 (Kiro)", "9router/kr/glm-5", "spark-symbolic", "Coding and tool use, without Claude. Uses Kiro credits"],
++            ["deepseek-3.2", "DeepSeek 3.2 (Kiro)", "9router/kr/deepseek-3.2", "spark-symbolic", "Step-by-step reasoning and maths. Uses Kiro credits"],
+             ["minimax-m2.5", "MiniMax M2.5 (Kiro)", "9router/kr/minimax-m2.5", "spark-symbolic", "General tasks and tool use. Uses Kiro credits"],
+-            ["gemini-3.6-flash", "Gemini 3.6 Flash", "9router/gemini/gemini-3.6-flash", "google-gemini-symbolic", "Fast, and reads images. Free tier (Gemini)"],
++            ["mistral-large-4", "Mistral Large 4", "9router/nvidia/mistralai/mistral-large-4-1t-a52b", "mistral-symbolic", "Good all-round, but NVIDIA's free queue can stall it for 30s or more. Free (NVIDIA)"],
++            ["nemotron-3-ultra", "Nemotron 3 Ultra", "9router/nvidia/nvidia/nemotron-3-ultra-550b-a55b", "spark-symbolic", "Big reasoning model; can stall on NVIDIA's free queue. Free (NVIDIA)"],
++            ["minimax-m3.1-flash", "MiniMax M3.1 Flash", "9router/nvidia/minimaxai/minimax-m3.1-flash", "spark-symbolic", "Quick questions; can stall on NVIDIA's free queue. Free (NVIDIA)"],
+             ["mistral-large-4-direct", "Mistral Large 4 (direct)", "nvidia/mistralai/mistral-large-4-1t-a52b", "mistral-symbolic", "Skips 9router: use it while 9router is stopped. Free (NVIDIA)"],
+         ].forEach(([id, name, model, icon, hint]) => {
+             root.addModel(`opencode-${id}`, {
+@@ -693,6 +696,22 @@ Singleton {
+             .arg(root.shortTokens(today.completionTokens ?? 0)).arg(savers || "none").arg(root.routerUsage.rtkHits ?? 0);
+     }
+ 
++    // The same, as short lines for the 9router chip's tooltip, which only breaks lines where told to
++    function routerSummaryLines() {
++        const today = root.routerUsage?.today;
++        if (!today) return "";
++        const providers = Object.entries(today.byProvider ?? {}).sort(([, a], [, b]) => b.requests - a.requests)
++            .map(([name, p]) => `${name} ${p.requests}`).join(" · ");
++        const savers = Object.entries(root.routerUsage.savers ?? {}).filter(([, on]) => on).map(([name]) => name).join(", ");
++        return [
++            Translation.tr("Today: %1 requests").arg(today.requests ?? 0),
++            providers,
++            Translation.tr("Tokens: %1 sent · %2 written").arg(root.shortTokens(today.promptTokens ?? 0)).arg(root.shortTokens(today.completionTokens ?? 0)),
++            Translation.tr("Savers on: %1").arg(savers || Translation.tr("none")),
++            Translation.tr("RTK shrank %1 tool results").arg(root.routerUsage.rtkHits ?? 0),
++        ].filter(line => line.length > 0).join("\n");
++    }
++
+     // /usage budget TOKENS: when a turn warns, 0 for never
+     function setOpencodeBudget(value) {
+         runOpencode(["team-set", "budget", String(value ?? "")], team => {

@@ -1,0 +1,118 @@
+diff --git a/modules/ii/sidebarLeft/AiChat.qml b/modules/ii/sidebarLeft/AiChat.qml
+index adc8d98..4dc9897 100644
+--- a/modules/ii/sidebarLeft/AiChat.qml
++++ b/modules/ii/sidebarLeft/AiChat.qml
+@@ -68,6 +68,23 @@ Item {
+             description: Translation.tr("Reject what OpenCode is asking"),
+             execute: () => Ai.answerLiveCard("reject")
+         },
++        {
++            name: "router",
++            description: Translation.tr("9router, the local AI router: start, stop, open or status"),
++            execute: args => {
++                const action = (args[0] ?? "status").toLowerCase();
++                if (action === "open") {
++                    if (!router.running) Ai.addMessage(Translation.tr("9router isn't running. Start it with %1router start").arg(root.commandPrefix), Ai.interfaceRole);
++                    else Qt.openUrlExternally(`${router.url}/dashboard`);
++                    return;
++                }
++                if (!["start", "stop", "status"].includes(action)) {
++                    Ai.addMessage(Translation.tr("Usage: %1router start, stop, open or status").arg(root.commandPrefix), Ai.interfaceRole);
++                    return;
++                }
++                router.run(action, true);
++            }
++        },
+         {
+             name: "project",
+             description: Translation.tr("Choose the folder for a new OpenCode chat"),
+@@ -290,6 +307,65 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+         messageListView.positionViewAtEnd();
+     }
+ 
++    // The local 9router (decolua/9router). ~/.local/bin/9router-ctl starts and stops it and
++    // prints its state as JSON. It listens on 127.0.0.1 only and nothing starts it on boot.
++    QtObject {
++        id: router
++        property bool running: false
++        property bool busy: false
++        property string error: ""
++        property string url: "http://127.0.0.1:20128"
++        property bool report: false // Say the result in the chat, for /router
++        property string action: ""
++        function run(what, reportIt) {
++            if (routerProc.running) return;
++            router.action = what;
++            router.report = reportIt;
++            router.busy = what !== "status";
++            routerProc.command = [`${Quickshell.env("HOME")}/.local/bin/9router-ctl`, what];
++            routerProc.running = true;
++        }
++    }
++
++    Process {
++        id: routerProc
++        stdout: StdioCollector {
++            id: routerOut
++            onStreamFinished: {
++                let state = {};
++                try {
++                    state = JSON.parse(routerOut.text);
++                } catch (e) {
++                    state = { "running": false, "error": Translation.tr("9router-ctl gave no answer") };
++                }
++                router.running = state.running === true;
++                router.error = state.error ?? "";
++                if (state.url) router.url = state.url;
++                router.busy = false;
++                if (!router.report) return;
++                const message = router.error.length > 0 ? Translation.tr("9router: %1").arg(router.error)
++                    : router.running ? Translation.tr("9router is running at %1. Its dashboard: %2router open").arg(router.url).arg(root.commandPrefix)
++                    : Translation.tr("9router is stopped");
++                Ai.addMessage(message, Ai.interfaceRole);
++            }
++        }
++        onExited: (exitCode, exitStatus) => {
++            if (exitCode !== 0 && routerOut.text.length === 0) {
++                router.busy = false;
++                router.running = false;
++                router.error = Translation.tr("9router-ctl failed (exit %1)").arg(exitCode);
++            }
++        }
++    }
++
++    Timer { // Notices a stop from elsewhere, only while the sidebar shows
++        interval: 15000
++        repeat: true
++        triggeredOnStart: true
++        running: GlobalStates.sidebarLeftOpen
++        onTriggered: if (!router.busy) router.run("status", false)
++    }
++
+     Process {
+         id: decodeImageAndAttachProc
+         property string imageDecodePath: Directories.cliphistDecode
+@@ -929,6 +1005,23 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+                     }
+                 }
+ 
++                ApiInputBoxIndicator {
++                    // 9router indicator. Says on or off in words, not by colour
++                    icon: "router"
++                    text: router.busy ? (router.action === "stop" ? Translation.tr("Stopping…") : Translation.tr("Starting…"))
++                        : router.running ? Translation.tr("9router on") : Translation.tr("9router off")
++                    tooltipText: router.error.length > 0
++                        ? Translation.tr("9router: %1\nClick to try again").arg(router.error)
++                        : router.running
++                        ? Translation.tr("9router is running at %1\nClick to open its dashboard\nStop it with %2router stop").arg(router.url).arg(root.commandPrefix)
++                        : Translation.tr("9router, the local AI router, is stopped\nClick to start it")
++                    onClicked: {
++                        if (router.busy) return;
++                        if (router.running) Qt.openUrlExternally(`${router.url}/dashboard`);
++                        else router.run("start", false);
++                    }
++                }
++
+                 // The tool rarely changes, so it lives in the / menu: /tool shows and sets it
+ 
+                 Item {

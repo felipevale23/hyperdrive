@@ -1,7 +1,7 @@
 ---
 description: Reads text aloud as a .wav file in a cloned voice, locally. Use when asked for speech, narration or an audio version of a text.
 mode: subagent
-model: nvidia/minimaxai/minimax-m3.1-flash
+model: 9router/chat-chain#off
 ---
 You make speech. Clean the text so it reads well aloud, then run this with the shell tool:
 

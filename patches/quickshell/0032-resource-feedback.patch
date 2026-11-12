@@ -1,0 +1,334 @@
+diff --git a/modules/ii/sidebarLeft/AiChat.qml b/modules/ii/sidebarLeft/AiChat.qml
+index 1eff78c..78454a6 100644
+--- a/modules/ii/sidebarLeft/AiChat.qml
++++ b/modules/ii/sidebarLeft/AiChat.qml
+@@ -116,6 +116,17 @@ Item {
+                 router.run(action, true);
+             }
+         },
++        {
++            name: "usage",
++            description: Translation.tr("Tokens this OpenCode chat used, by agent and model, and 9router today"),
++            args: [
++                { name: "budget", description: Translation.tr("Warn when a turn passes this many tokens: /usage budget 300000, 0 for never") },
++            ],
++            execute: args => root.opencodeOnly(() => {
++                if (args[0] === "budget") Ai.setOpencodeBudget(args[1]);
++                else Ai.showOpencodeUsage();
++            })
++        },
+         {
+             name: "project",
+             description: Translation.tr("Choose the folder for a new OpenCode chat"),
+@@ -389,12 +400,43 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+         }
+     }
+ 
++    // The graphics card's load, read from amdgpu's sysfs files while the sidebar shows. -1 when there are none
++    QtObject {
++        id: gpu
++        property int busy: -1
++        property real vramUsed: 0
++        property real vramTotal: 0
++    }
++    Process {
++        id: gpuProc
++        command: ["bash", "-c", "d=$(ls -d /sys/class/drm/card*/device 2>/dev/null | while read -r x; do [ -r \"$x/gpu_busy_percent\" ] && echo \"$x\" && break; done); [ -n \"$d\" ] && cat \"$d/gpu_busy_percent\" \"$d/mem_info_vram_used\" \"$d/mem_info_vram_total\""]
++        stdout: StdioCollector {
++            id: gpuOut
++            onStreamFinished: {
++                const values = gpuOut.text.trim().split("\n").map(Number);
++                gpu.busy = values.length === 3 && !isNaN(values[0]) ? values[0] : -1;
++                gpu.vramUsed = values[1] ?? 0;
++                gpu.vramTotal = values[2] ?? 0;
++            }
++        }
++    }
++    Timer {
++        interval: 3000
++        repeat: true
++        triggeredOnStart: true
++        running: GlobalStates.sidebarLeftOpen
++        onTriggered: if (!gpuProc.running) gpuProc.running = true
++    }
++
+     Timer { // Notices a stop from elsewhere, only while the sidebar shows
+         interval: 15000
+         repeat: true
+         triggeredOnStart: true
+         running: GlobalStates.sidebarLeftOpen
+-        onTriggered: if (!router.busy) router.run("status", false)
++        onTriggered: {
++            if (!router.busy) router.run("status", false);
++            Ai.refreshRouterUsage();
++        }
+     }
+ 
+     Process {
+@@ -506,26 +548,65 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+                     anchors.centerIn: parent
+                     spacing: 10
+ 
++                    // OpenCode models: how full the context is and what the chat has used. The key and
++                    // temperature don't apply there: OpenCode reads its own keys and settings
++                    StatusItem {
++                        visible: Ai.opencodeModel
++                        readonly property var context: Ai.opencodeContext
++                        readonly property int percent: context?.limit ? Math.round(100 * context.used / context.limit) : -1
++                        icon: "data_usage"
++                        statusText: percent >= 0 ? Translation.tr("%1% context").arg(percent) : Translation.tr("context")
++                        description: percent >= 0
++                            ? Translation.tr("Context: %1 of %2 tokens\nStart a new chat with /clear when it gets high").arg(Ai.shortTokens(context.used)).arg(Ai.shortTokens(context.limit))
++                            : Translation.tr("How full the model's context is\nShown after the first reply")
++                    }
++                    StatusSeparator { visible: Ai.opencodeModel }
++                    StatusItem {
++                        visible: Ai.opencodeModel
++                        icon: "token"
++                        statusText: Ai.shortTokens(Ai.opencodeChatTokens)
++                        description: Translation.tr("Tokens this chat has used, cached ones included\nDetails with /usage")
++                    }
+                     StatusItem {
++                        visible: !Ai.opencodeModel
+                         icon: Ai.currentModelHasApiKey ? "key" : "key_off"
+                         statusText: ""
+                         description: Ai.currentModelHasApiKey ? Translation.tr("API key is set\nChange with /key YOUR_API_KEY") : Translation.tr("No API key\nSet it with /key YOUR_API_KEY")
+                     }
+-                    StatusSeparator {}
++                    StatusSeparator { visible: !Ai.opencodeModel }
+                     StatusItem {
++                        visible: !Ai.opencodeModel
+                         icon: "device_thermostat"
+                         statusText: Ai.temperature.toFixed(1)
+                         description: Translation.tr("Temperature\nChange with /temp VALUE")
+                     }
+                     StatusSeparator {
+-                        visible: Ai.tokenCount.total > 0
++                        visible: !Ai.opencodeModel && Ai.tokenCount.total > 0
+                     }
+                     StatusItem {
+-                        visible: Ai.tokenCount.total > 0
++                        visible: !Ai.opencodeModel && Ai.tokenCount.total > 0
+                         icon: "token"
+                         statusText: Ai.tokenCount.total
+                         description: Translation.tr("Total token count\nInput: %1\nOutput: %2").arg(Ai.tokenCount.input).arg(Ai.tokenCount.output)
+                     }
++                    // This computer's load: matters once models run here
++                    StatusSeparator {}
++                    StatusItem {
++                        icon: "developer_board"
++                        statusText: Translation.tr("CPU %1%").arg(Math.round(ResourceUsage.cpuUsage * 100))
++                        description: Translation.tr("Processor in use")
++                    }
++                    StatusItem {
++                        icon: "memory"
++                        statusText: Translation.tr("RAM %1%").arg(Math.round(ResourceUsage.memoryUsedPercentage * 100))
++                        description: Translation.tr("Memory in use: %1 of %2").arg(ResourceUsage.kbToGbString(ResourceUsage.memoryUsed)).arg(ResourceUsage.maxAvailableMemoryString)
++                    }
++                    StatusItem {
++                        visible: gpu.busy >= 0
++                        icon: "display_settings"
++                        statusText: Translation.tr("GPU %1%").arg(gpu.busy)
++                        description: Translation.tr("Graphics card busy: %1%\nVideo memory: %2 of %3 GB").arg(gpu.busy).arg((gpu.vramUsed / 1073741824).toFixed(1)).arg((gpu.vramTotal / 1073741824).toFixed(1))
++                    }
+                 }
+             }
+ 
+@@ -1107,6 +1188,7 @@ Inline w/ backslash and round brackets \\(e^{i\\pi} + 1 = 0\\)
+                         ? Translation.tr("9router: %1\nClick to try again").arg(router.error)
+                         : router.running
+                         ? Translation.tr("9router is running at %1\nClick to open its dashboard\nStop it with %2router stop").arg(router.url).arg(root.commandPrefix)
++                            + (Ai.routerUsage?.today ? `\n\n${Ai.routerSummary()}` : "")
+                         : Translation.tr("9router, the local AI router, is stopped\nClick to start it")
+                     onClicked: {
+                         if (router.busy) return;
+diff --git a/modules/ii/sidebarLeft/aiChat/AiMessage.qml b/modules/ii/sidebarLeft/aiChat/AiMessage.qml
+index 6245e7a..6e61070 100644
+--- a/modules/ii/sidebarLeft/aiChat/AiMessage.qml
++++ b/modules/ii/sidebarLeft/aiChat/AiMessage.qml
+@@ -235,6 +235,25 @@ Rectangle {
+             }
+         }
+ 
++        StyledText { // This turn's tokens: each agent and model, and how full the context is
++            readonly property var usage: root.messageData?.usage
++            visible: (usage?.agents?.length ?? 0) > 0
++            Layout.fillWidth: true
++            Layout.leftMargin: 10
++            Layout.rightMargin: 10
++            textFormat: Text.PlainText // Agent names can come from the model
++            wrapMode: Text.Wrap
++            font.pixelSize: Appearance.font.pixelSize.smaller
++            color: Appearance.colors.colOnSurfaceVariant
++            text: {
++                if (!visible) return "";
++                const parts = usage.agents.map(entry => Translation.tr("%1 on %2: %3 tokens, %4 steps")
++                    .arg(entry.agent).arg(entry.model.split("/").pop() || "?").arg(Ai.shortTokens(Ai.tokensProcessed(entry))).arg(entry.steps));
++                const context = usage.context?.limit ? Translation.tr("context %1%").arg(Math.round(100 * usage.context.used / usage.context.limit)) : "";
++                return [...parts, context].filter(part => part.length > 0).join("  ·  ");
++            }
++        }
++
+         Repeater { // Images it made. One that doesn't exist takes no space
+             model: root.imagePaths
+             delegate: Image {
+diff --git a/services/Ai.qml b/services/Ai.qml
+index 86544cc..a99cfa7 100644
+--- a/services/Ai.qml
++++ b/services/Ai.qml
+@@ -617,7 +617,92 @@ Singleton {
+         root.addMessage(Translation.tr("Temperature: %1").arg(root.temperature), Ai.interfaceRole);
+     }
+ 
++    // OpenCode usage for the chat on screen: tokens processed so far, and how full the context is
++    property real opencodeChatTokens: 0
++    property var opencodeContext: null // { used, limit } from the last turn
++    // Today's 9router numbers and token savers, from 9router-ctl usage. Null until read
++    property var routerUsage: null
++    function refreshRouterUsage() {
++        if (!routerUsageProc.running) routerUsageProc.running = true;
++    }
++    Process {
++        id: routerUsageProc
++        command: [`${Quickshell.env("HOME")}/.local/bin/9router-ctl`, "usage"]
++        stdout: StdioCollector {
++            id: routerUsageOut
++            onStreamFinished: {
++                try {
++                    root.routerUsage = JSON.parse(routerUsageOut.text);
++                } catch (e) {
++                    root.routerUsage = null;
++                }
++            }
++        }
++    }
++
++    Process { // Reads a resumed chat's totals; separate from opencodeCommand, which is still finishing
++        id: opencodeUsageProc
++        stdout: StdioCollector {
++            id: opencodeUsageOut
++            onStreamFinished: {
++                try {
++                    const reply = JSON.parse(opencodeUsageOut.text);
++                    if (!reply.ok) return;
++                    root.opencodeChatTokens = reply.result.total;
++                    root.opencodeContext = reply.result.context;
++                } catch (e) {}
++            }
++        }
++    }
++
++    function tokensProcessed(entry) {
++        return (entry.input ?? 0) + (entry.cache ?? 0) + (entry.output ?? 0) + (entry.reasoning ?? 0);
++    }
++    function shortTokens(count) {
++        return root.apiStrategies.opencode.shortTokens(Math.round(count));
++    }
++
++    // /usage: this chat's tokens by agent and model, context fill, the budget, and 9router today
++    function showOpencodeUsage() {
++        const session = opencodeSessionOrAdvice();
++        if (session.length === 0) return;
++        root.refreshRouterUsage();
++        runOpencode(["usage", session], usage => {
++            root.opencodeChatTokens = usage.total;
++            if (usage.context) root.opencodeContext = usage.context;
++            const rows = usage.agents.map(entry => `| ${entry.agent} | ${entry.model.split("/").pop()} | ${entry.steps} | ${root.shortTokens(entry.input + entry.cache)} | ${root.shortTokens(entry.cache)} | ${root.shortTokens(entry.output + entry.reasoning)} | ${root.shortTokens(root.tokensProcessed(entry))} |`);
++            const context = usage.context?.limit
++                ? Translation.tr("Context: %1 of %2 (%3%)").arg(root.shortTokens(usage.context.used)).arg(root.shortTokens(usage.context.limit)).arg(Math.round(100 * usage.context.used / usage.context.limit))
++                : Translation.tr("Context: not known yet");
++            const budget = usage.budget > 0 ? Translation.tr("Budget: a warning past %1 tokens in one turn").arg(root.shortTokens(usage.budget)) : Translation.tr("Budget: off");
++            const router = root.routerUsage?.today ? root.routerSummary() : "";
++            root.addMessage(`${Translation.tr("Tokens in this chat, over %1 turns: %2").arg(usage.turns).arg(root.shortTokens(usage.total))}\n\n`
++                + `| ${Translation.tr("Agent")} | ${Translation.tr("Model")} | ${Translation.tr("Steps")} | ${Translation.tr("Sent")} | ${Translation.tr("Of it cached")} | ${Translation.tr("Written")} | ${Translation.tr("Total")} |\n|---|---|---|---|---|---|---|\n`
++                + `${rows.join("\n")}\n\n${context}. ${budget}.${router.length > 0 ? `\n\n${router}` : ""}`, root.interfaceRole);
++        });
++    }
++
++    // One paragraph on 9router today, for /usage and the 9router chip
++    function routerSummary() {
++        const today = root.routerUsage?.today;
++        if (!today) return "";
++        const providers = Object.entries(today.byProvider ?? {}).map(([name, p]) => `${name} ${p.requests}`).join(", ");
++        const savers = Object.entries(root.routerUsage.savers ?? {}).filter(([, on]) => on).map(([name]) => name).join(", ");
++        return Translation.tr("9router today: %1 requests (%2), %3 tokens sent, %4 written. Token savers on: %5. RTK shrank %6 tool results since 9router started.")
++            .arg(today.requests ?? 0).arg(providers || "none").arg(root.shortTokens(today.promptTokens ?? 0))
++            .arg(root.shortTokens(today.completionTokens ?? 0)).arg(savers || "none").arg(root.routerUsage.rtkHits ?? 0);
++    }
++
++    // /usage budget TOKENS: when a turn warns, 0 for never
++    function setOpencodeBudget(value) {
++        runOpencode(["team-set", "budget", String(value ?? "")], team => {
++            root.addMessage(team.budget > 0 ? Translation.tr("A turn now warns past %1 tokens").arg(root.shortTokens(team.budget)) : Translation.tr("Token budget warning is off"), root.interfaceRole);
++        });
++    }
++
+     function clearMessages() {
++        root.opencodeChatTokens = 0;
++        root.opencodeContext = null;
+         root.messageIDs = [];
+         root.messageByID = ({});
+         root.tokenCount.input = -1;
+@@ -805,6 +890,8 @@ Singleton {
+             root.clearMessages();
+             root.apiStrategies.opencode.sessionId = session.id;
+             root.opencodeFolder = session.folder;
++            opencodeUsageProc.command = [root.opencodeHelper, "usage", session.id];
++            opencodeUsageProc.running = true;
+             messages.forEach(message => {
+                 const data = root.aiMessageComponent.createObject(root, {
+                     "role": message.role,
+@@ -1005,6 +1092,10 @@ Singleton {
+                         requester.message.functionCall = result.functionCall;
+                         root.handleFunctionCall(result.functionCall.name, result.functionCall.args, requester.message);
+                     }
++                    if (result.turnUsage) {
++                        root.opencodeChatTokens += result.turnUsage.agents.reduce((sum, entry) => sum + root.tokensProcessed(entry), 0);
++                        if (result.turnUsage.context) root.opencodeContext = result.turnUsage.context;
++                    }
+                     if (result.tokenUsage) {
+                         root.tokenCount.input = result.tokenUsage.input;
+                         root.tokenCount.output = result.tokenUsage.output;
+diff --git a/services/ai/AiMessageData.qml b/services/ai/AiMessageData.qml
+index 37f38da..68407a5 100644
+--- a/services/ai/AiMessageData.qml
++++ b/services/ai/AiMessageData.qml
+@@ -24,5 +24,6 @@ QtObject {
+     property string systemFence // Random fence for what OpenCode's tab says itself, so a model can't print the same thing
+     property string currentStep // What OpenCode is doing right now
+     property var subagents: [] // One row per subagent: id, name, task, model, state, activity, tokens
++    property var usage: null // OpenCode: this turn's tokens by agent and model, and how full the context is
+     property bool visibleToUser: true
+ }
+diff --git a/services/ai/OpenCodeApiStrategy.qml b/services/ai/OpenCodeApiStrategy.qml
+index 03341ce..99d413e 100644
+--- a/services/ai/OpenCodeApiStrategy.qml
++++ b/services/ai/OpenCodeApiStrategy.qml
+@@ -83,6 +83,13 @@ ApiStrategy {
+         add(message, `\n\n${fenced(fence ?? systemFenceOf(message), block)}\n\n`);
+     }
+ 
++    // 1234 -> "1.2k", 2500000 -> "2.5M"
++    function shortTokens(count) {
++        if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;
++        if (count >= 1000) return `${(count / 1000).toFixed(1)}k`;
++        return `${count}`;
++    }
++
+     function addNote(message, icon, text, tone) {
+         addBlock(message, { "kind": "note", "icon": icon, "text": text, "tone": tone ?? "" });
+     }
+@@ -294,6 +301,13 @@ ApiStrategy {
+             const output = event.tokens?.output ?? -1;
+             return { tokenUsage: { input: input, output: output, total: input + output } };
+         }
++        case "turn_usage": // Sent just before the end: tokens by agent and model, and context fill
++            message.usage = { "agents": event.agents ?? [], "context": event.context ?? null };
++            return { turnUsage: message.usage };
++        case "budget":
++            addNote(message, "warning", qsTr("This turn has used %1 tokens, past the %2 budget. Stop it if it's running away. /usage budget changes the limit.")
++                .arg(shortTokens(event.total ?? 0)).arg(shortTokens(event.budget ?? 0)), "error");
++            return {};
+         case "succeeded":
+             finishTurn(message);
+             if (!hasText) addNote(message, "chat_error", qsTr("The model finished without writing a reply."));

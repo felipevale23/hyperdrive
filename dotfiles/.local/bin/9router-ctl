@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# Starts, stops and reports the local 9router (decolua/9router, built in ~/dev/ext/9router).
+#   9router-ctl start | stop | status    prints {"running":…,"pid":…,"url":…} as JSON
+#   9router-ctl quota                    the quota tracker: each account's limits and resets, as JSON
+#   9router-ctl usage                    today's requests and tokens by provider, and which token savers are on
+# It listens on 127.0.0.1 only and runs until stopped or logout; nothing starts it on boot.
+set -uo pipefail
+
+DIR="${NINEROUTER_DIR:-$HOME/dev/ext/9router}"
+PORT=20128
+URL="http://127.0.0.1:$PORT"
+LOG="${XDG_RUNTIME_DIR:-/tmp}/9router.log"
+
+# The process listening on the port, only if it is this 9router build
+pid_of() {
+    local pid
+    pid=$(ss -ltnpH "sport = :$PORT" 2>/dev/null | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
+    [[ -n "$pid" && "$(readlink -f "/proc/$pid/cwd" 2>/dev/null)" == "$DIR/.next/standalone" ]] && echo "$pid"
+}
+
+status() {
+    local pid; pid=$(pid_of)
+    if [[ -n "$pid" ]]; then
+        printf '{"running":true,"pid":%s,"url":"%s"}\n' "$pid" "$URL"
+    elif ss -ltnH "sport = :$PORT" 2>/dev/null | grep -q .; then
+        printf '{"running":false,"error":"port %s is used by another program","url":"%s"}\n' "$PORT" "$URL"
+    else
+        printf '{"running":false,"url":"%s"}\n' "$URL"
+    fi
+}
+
+start() {
+    if [[ -n "$(pid_of)" ]]; then status; return 0; fi
+    if [[ ! -f "$DIR/.next/standalone/custom-server.js" || ! -f "$DIR/.env" ]]; then
+        printf '{"running":false,"error":"9router is not built in %s","url":"%s"}\n' "$DIR" "$URL"; return 1
+    fi
+    (
+        cd "$DIR/.next/standalone" || exit 1
+        set -a; . "$DIR/.env"; set +a
+        HOSTNAME=127.0.0.1 PORT=$PORT exec setsid node custom-server.js >>"$LOG" 2>&1 </dev/null
+    ) &
+    disown
+    for _ in $(seq 1 40); do
+        [[ -n "$(pid_of)" ]] && { status; return 0; }
+        sleep 0.5
+    done
+    printf '{"running":false,"error":"it did not start, see %s","url":"%s"}\n' "$LOG" "$URL"; return 1
+}
+
+stop() {
+    local pid; pid=$(pid_of)
+    if [[ -n "$pid" ]]; then
+        kill "$pid"
+        for _ in $(seq 1 20); do [[ -z "$(pid_of)" ]] && break; sleep 0.25; done
+    fi
+    status
+}
+
+# Read from 9router's own database; works whether or not it's running
+usage() {
+    local db="$HOME/.9router/db/data.sqlite"
+    [[ -r "$db" ]] || { echo '{"error":"no 9router database yet"}'; return 1; }
+    local today settings rtk_hits
+    today=$(sqlite3 -readonly "$db" "select data from usageDaily where dateKey = '$(date +%F)';" 2>/dev/null)
+    settings=$(sqlite3 -readonly "$db" "select data from settings limit 1;" 2>/dev/null)
+    # RTK logs only how many tool results it shrank ("RTK:3"), in this run's log
+    rtk_hits=$(grep -o 'RTK:[0-9]*' "$LOG" 2>/dev/null | cut -d: -f2 | paste -sd+ | bc 2>/dev/null)
+    jq -n --argjson today "${today:-null}" --argjson settings "${settings:-{\}}" --argjson rtk "${rtk_hits:-0}" '{
+        today: ($today // {requests: 0, promptTokens: 0, completionTokens: 0, byProvider: {}}),
+        savers: {
+            rtk: ($settings.rtkEnabled // true), caveman: ($settings.cavemanEnabled // false),
+            ponytail: ($settings.ponytailEnabled // false), headroom: ($settings.headroomEnabled // false),
+            pxpipe: ($settings.pxpipeEnabled // false)
+        },
+        rtkHits: $rtk
+    }'
+}
+
+# The quota tracker, as the dashboard shows it: each connected account's limits and when they reset.
+# Reads the dashboard's own API with 9router's local CLI token, built here and never printed.
+quota() {
+    [[ -n "$(pid_of)" ]] || { echo '{"error":"9router is not running"}'; return 1; }
+    python3 -I - "$URL" <<'PY'
+import hashlib, json, os, sys, urllib.request
+
+url = sys.argv[1]
+data_dir = os.path.expanduser("~/.9router")
+
+def read(path):
+    with open(os.path.join(data_dir, path)) as handle:
+        return handle.read().strip()
+
+try:
+    token = hashlib.sha256((read("machine-id") + "9r-cli-auth" + read("auth/cli-secret")).encode()).hexdigest()[:16]
+except OSError as error:
+    print(json.dumps({"error": f"no 9router CLI token: {error.strerror}"})); sys.exit(1)
+
+def get(path):
+    request = urllib.request.Request(url + path, headers={"x-9r-cli-token": token})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return json.load(response)
+
+try:
+    listing = get("/api/providers")
+except Exception as error:
+    print(json.dumps({"error": f"providers: {error}"})); sys.exit(1)
+connections = listing.get("connections", listing) if isinstance(listing, dict) else listing
+
+rows = []
+for conn in connections:
+    if not isinstance(conn, dict) or conn.get("isActive") is False:
+        continue
+    row = {"provider": conn.get("provider"), "name": conn.get("name") or conn.get("email") or conn.get("id"), "quotas": []}
+    try:
+        usage = get(f"/api/usage/{conn['id']}")
+    except Exception as error:
+        row["error"] = str(error)[:120]
+        rows.append(row); continue
+    if usage.get("message"):
+        row["message"] = usage["message"]
+    for key, item in (usage.get("quotas") or {}).items():
+        if not isinstance(item, dict):
+            continue
+        row["quotas"].append({
+            "name": item.get("displayName") or key,
+            "used": item.get("used"), "total": item.get("total"),
+            "remaining": item.get("remainingPercentage"), "resetAt": item.get("resetAt"),
+        })
+    rows.append(row)
+print(json.dumps({"connections": rows}))
+PY
+}
+
+# Headroom: the context-compressing proxy 9router calls. Installed in a venv, run on 127.0.0.1:8787.
+#   9router-ctl headroom start | stop | status    prints {"running":…,"version":…} as JSON
+HEADROOM_DIR="$HOME/.local/share/headroom"
+HEADROOM_PORT=8787
+
+headroom_pid() {
+    local pid
+    pid=$(ss -ltnpH "sport = :$HEADROOM_PORT" 2>/dev/null | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2)
+    [[ -n "$pid" ]] && tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q headroom && echo "$pid"
+}
+
+headroom_status() {
+    local pid health
+    pid=$(headroom_pid)
+    if [[ -n "$pid" ]]; then
+        health=$(curl -s -m 2 "http://127.0.0.1:$HEADROOM_PORT/health" 2>/dev/null)
+        jq -n --argjson pid "$pid" --argjson health "${health:-null}" '{running: true, pid: $pid, version: ($health.version // null), ready: ($health.ready // false)}'
+    elif [[ ! -x "$HEADROOM_DIR/venv/bin/headroom" ]]; then
+        echo '{"running":false,"error":"headroom is not installed in ~/.local/share/headroom/venv"}'
+    elif ss -ltnH "sport = :$HEADROOM_PORT" 2>/dev/null | grep -q .; then
+        echo "{\"running\":false,\"error\":\"port $HEADROOM_PORT is used by another program\"}"
+    else
+        echo '{"running":false}'
+    fi
+}
+
+headroom_start() {
+    [[ -z "$(headroom_pid)" && -x "$HEADROOM_DIR/venv/bin/headroom" ]] || { headroom_status; return; }
+    (
+        cd "$HEADROOM_DIR" || exit 1
+        HEADROOM_TELEMETRY=off setsid "$HEADROOM_DIR/venv/bin/headroom" proxy --host 127.0.0.1 --port "$HEADROOM_PORT" --no-telemetry \
+            >>"$HEADROOM_DIR/proxy.log" 2>&1 </dev/null &
+    )
+    for _ in $(seq 1 40); do
+        curl -s -m 1 -o /dev/null "http://127.0.0.1:$HEADROOM_PORT/health" && break
+        sleep 0.5
+    done
+    headroom_status
+}
+
+headroom_stop() {
+    local pid; pid=$(headroom_pid)
+    if [[ -n "$pid" ]]; then
+        kill "$pid"
+        for _ in $(seq 1 20); do [[ -z "$(headroom_pid)" ]] && break; sleep 0.25; done
+    fi
+    headroom_status
+}
+
+case "${1:-status}" in
+    start) start ;;
+    stop) stop ;;
+    status) status ;;
+    usage) usage ;;
+    quota) quota ;;
+    headroom) case "${2:-status}" in start) headroom_start ;; stop) headroom_stop ;; status) headroom_status ;; *) echo "usage: 9router-ctl headroom start|stop|status" >&2; exit 2 ;; esac ;;
+    *) echo "usage: 9router-ctl start|stop|status|usage|quota|headroom" >&2; exit 2 ;;
+esac
